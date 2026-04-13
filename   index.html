@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="theme-color" content="#B87C74" id="metaTheme"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<title id="pageTitle">Salon — Catalogue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+
+<!-- FIREBASE SDK (v9) -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, getDocs, addDoc, doc, setDoc, deleteDoc, onSnapshot, serverTimestamp, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+
+try {
+  const cfg = window.SALON_CONFIG?.firebase;
+  if(!cfg?.apiKey || cfg.apiKey === 'VOTRE_API_KEY') throw new Error('Firebase non configuré — mode local');
+  const app = initializeApp(cfg);
+  const db = getFirestore(app);
+  const storage = getStorage(app);
+  window.__DB = db;
+  window.__storage = storage;
+  window.__fb = { collection, getDocs, addDoc, doc, setDoc, deleteDoc, onSnapshot, serverTimestamp, updateDoc, storage, ref, uploadBytes, getDownloadURL, deleteObject };
+  
+  function setDot(ok){
+    const d=document.getElementById('fbDot'), l=document.getElementById('fbLabel');
+    if(d) d.classList.toggle('ok',ok);
+    if(l) l.textContent=ok?'En ligne':'Local';
+  }
+  window._setDot = setDot;
+  
+  // --- COIFFURES ---
+  function startCatalog(){
+    onSnapshot(collection(db,'coiffures'), snap=>{
+      const data=[];
+      snap.forEach(d=>data.push({id:d.id,...d.data()}));
+      window.__fbCoiffures=data.length?data:null;
+      window.renderCatalog&&window.renderCatalog();
+      setDot(true);
+    }, err=>{ console.warn('Firebase coiffures:',err.message); window.renderCatalog&&window.renderCatalog(); setDot(false); });
+  }
+  
+  // --- TICKER MESSAGES ---
+  window.fbListenTicker = function(cb) {
+    return onSnapshot(collection(db, 'ticker_messages'), snap => {
+      const msgs = [];
+      snap.forEach(d => msgs.push({ id: d.id, ...d.data() }));
+      msgs.sort((a,b) => (a.order || 0) - (b.order || 0));
+      cb(msgs);
+    });
+  };
+  window.fbSaveTickerMessage = async function(msg) {
+    try {
+      if(msg.id) await setDoc(doc(db, 'ticker_messages', msg.id), msg);
+      else await addDoc(collection(db, 'ticker_messages'), msg);
+      return true;
+    } catch(e) { console.error(e); return false; }
+  };
+  window.fbDeleteTickerMessage = async function(id) {
+    try { await deleteDoc(doc(db, 'ticker_messages', id)); return true; }
+    catch(e) { return false; }
+  };
+  
+  // --- TV SESSION (Galerie synchronisée) ---
+  window.fbGetTvSession = function(cb) {
+    const docRef = doc(db, 'tv_session', 'current');
+    return onSnapshot(docRef, snap => {
+      if(snap.exists()) cb({ id: snap.id, ...snap.data() });
+      else cb(null);
+    });
+  };
+  window.fbUpdateTvSession = async function(data) {
+    try {
+      await setDoc(doc(db, 'tv_session', 'current'), data, { merge: true });
+      return true;
+    } catch(e) { return false; }
+  };
+  
+  // --- TV PLAYLIST (Médias) ---
+  window.fbListenPlaylist = function(cb) {
+    return onSnapshot(collection(db, 'media_playlist'), snap => {
+      const items = [];
+      snap.forEach(d => items.push({ id: d.id, ...d.data() }));
+      items.sort((a,b) => (a.order || 0) - (b.order || 0));
+      cb(items);
+    });
+  };
+  window.fbSaveMedia = async function(media) {
+    try {
+      if(media.id) await setDoc(doc(db, 'media_playlist', media.id), media);
+      else await addDoc(collection(db, 'media_playlist'), media);
+      return true;
+    } catch(e) { return false; }
+  };
+  window.fbDeleteMedia = async function(id) {
+    try { await deleteDoc(doc(db, 'media_playlist', id)); return true; }
+    catch(e) { return false; }
+  };
+  
+  // --- SALON CONFIG ---
+  window.fbGetSalonConfig = function(cb) {
+    const docRef = doc(db, 'salon_config', 'main');
+    return onSnapshot(docRef, snap => {
+      if(snap.exists()) cb({ id: snap.id, ...snap.data() });
+      else cb(null);
+    });
+  };
+  window.fbUpdateSalonConfig = async function(data) {
+    try {
+      await setDoc(doc(db, 'salon_config', 'main'), data, { merge: true });
+      return true;
+    } catch(e) { return false; }
+  };
+  
+  // --- UPLOAD IMAGE / VIDEO / AUDIO ---
+  window.uploadFileToStorage = async function(file, path) {
+    if(!window.__storage) throw new Error('Storage non disponible');
+    const storageRef = ref(window.__storage, path);
+    await uploadBytes(storageRef, file);
+    const url = await getDownloadURL(storageRef);
+    return url;
+  };
+  
+  // --- RESERVATIONS ---
+  window.fbSaveResa = async function(resa){
+    try{ await addDoc(collection(db,'reservations'),{...resa,statut:'en_attente',createdAt:serverTimestamp()}); return true; }
+    catch(e){ console.error(e); return false; }
+  };
+  window.fbListenResa = function(cb){
+    return onSnapshot(collection(db,'reservations'), snap=>{
+      const list=[];
+      snap.forEach(d=>list.push({id:d.id,...d.data()}));
+      list.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+      cb(list);
+    });
+  };
+  window.fbUpdateStatut = async function(id,statut){
+    try{ await updateDoc(doc(db,'reservations',id),{statut}); return true; }
+    catch(e){ return false; }
+  };
+  window.fbSaveCoiffure = async function(c){
+    try{
+      const {id,...data}=c;
+      const ref=id?doc(db,'coiffures',id):doc(collection(db,'coiffures'));
+      await setDoc(ref,data,{merge:true}); return true;
+    } catch(e){ return false; }
+  };
+  window.fbDeleteCoiffure = async function(id){
+    try{ await deleteDoc(doc(db,'coiffures',id)); return true; }
+    catch(e){ return false; }
+  };
+  
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(startCatalog,600));
+} catch(e){
+  console.warn('Mode hors-ligne:',e.message);
+  document.addEventListener('DOMContentLoaded',()=>{ window.renderCatalog&&window.renderCatalog(); });
+}
+</script>
+
+<style>
+/* ═══════════════════════════════════════
+   SALON MIXTE — CSS PREMIUM v3.0
+   Nouvelles features : Ticker, TV Mode, Galerie synchro, Playlist Audio/Video
+═══════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --rose:#B87C74;--rose2:#D4A09A;--rose3:#F9EEEC;--rose4:#FDF6F5;
+  --blue:#4A90D9;--blue2:#E8F2FC;
+  --gold:#C9A84C;--gold2:#FBF0D6;--gold3:#A07830;
+  --wa:#25D366;--wa2:#128C7E;
+  --dark:#1A1618;--dark2:#2C2527;--mid:#7A6B6D;--muted:#A89899;
+  --lite:#FAF7F4;--white:#FFFFFF;--border:#EDE4E2;--border2:#DDD0CD;
+  --red:#C0392B;--red2:#FDECEA;
+  --green:#27AE60;--green2:#E8F8EF;
+  --orange:#E67E22;--orange2:#FEF3E2;
+  --shadow-sm:0 2px 8px rgba(184,124,116,.08);
+  --shadow:0 4px 20px rgba(184,124,116,.12);
+  --shadow-lg:0 12px 40px rgba(184,124,116,.18);
+  --r-sm:8px;--r:14px;--r-lg:20px;--r-xl:28px;
+  --t:.22s cubic-bezier(.4,0,.2,1);
+}
+[data-theme="dark"]{
+  --dark:#F5F0EE;--dark2:#EDE5E3;--mid:#A89899;--muted:#7A6B6D;
+  --lite:#130F10;--white:#1E1618;--border:#2E2224;--border2:#3D2E30;
+  --rose3:#2A1A18;--rose4:#1F1416;--gold2:#2A2015;--blue2:#0e1f33;
+  --shadow-sm:0 2px 8px rgba(0,0,0,.3);--shadow:0 4px 20px rgba(0,0,0,.35);--shadow-lg:0 12px 40px rgba(0,0,0,.45);
+}
+html{scroll-behavior:smooth}
+body{font-family:'DM Sans',sans-serif;background:var(--lite);color:var(--dark);min-height:100vh;transition:background var(--t),color var(--t);padding-bottom:0;margin-bottom:0}
+img{max-width:100%;display:block}
+input,select,textarea,button{font-family:'DM Sans',sans-serif}
+
+/* LOADER */
+#loader{position:fixed;inset:0;background:var(--dark2);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;transition:opacity .6s,visibility .6s}
+#loader.hide{opacity:0;visibility:hidden;pointer-events:none}
+.ld-logo{font-family:'Cormorant Garamond',serif;color:#fff;font-size:2.8rem;font-weight:700;letter-spacing:2px}
+.ld-logo em{color:var(--rose2);font-style:italic}
+.ld-sub{color:rgba(255,255,255,.4);font-size:.65rem;letter-spacing:5px;text-transform:uppercase;margin-top:6px}
+.ld-bar{width:160px;height:2px;background:rgba(255,255,255,.12);border-radius:10px;margin-top:28px;overflow:hidden}
+.ld-fill{height:100%;background:linear-gradient(90deg,var(--rose),var(--rose2));animation:lf 1.4s cubic-bezier(.4,0,.2,1) forwards}
+@keyframes lf{from{width:0}to{width:100%}}
+.ld-dots{display:flex;gap:6px;margin-top:16px}
+.ld-dot{width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.25);animation:ld 1.2s ease infinite}
+.ld-dot:nth-child(2){animation-delay:.2s}.ld-dot:nth-child(3){animation-delay:.4s}
+@keyframes ld{0%,60%,100%{transform:scale(.8);opacity:.25}30%{transform:scale(1.2);opacity:1}}
+
+/* TOPBAR */
+#topbar{background:var(--dark2);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:56px;position:sticky;top:0;z-index:500;box-shadow:0 2px 12px rgba(0,0,0,.2)}
+.t-brand{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.t-mark{width:34px;height:34px;background:linear-gradient(135deg,var(--rose),var(--rose2));border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.15rem;flex-shrink:0}
+.t-name{font-family:'Cormorant Garamond',serif;font-size:1.06rem;letter-spacing:.8px;font-weight:700;line-height:1.1}
+.t-name em{color:var(--rose2);font-style:italic}
+.t-actions{display:flex;gap:7px;align-items:center}
+.btn-i{background:rgba(255,255,255,.09);border:1.5px solid rgba(255,255,255,.12);color:#fff;width:38px;height:38px;border-radius:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:var(--t);flex-shrink:0}
+.btn-i:hover{background:var(--rose);border-color:var(--rose)}
+.btn-i svg{width:18px;height:18px;fill:currentColor}
+.btn-wa{background:linear-gradient(135deg,var(--wa),var(--wa2))!important;border-color:var(--wa)!important;width:auto!important;padding:0 13px;gap:6px;font-size:.74rem;font-weight:700;letter-spacing:.3px}
+.fb-pill{display:inline-flex;align-items:center;gap:5px;font-size:.63rem;padding:4px 9px;border-radius:20px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.55)}
+.fb-dot{width:6px;height:6px;border-radius:50%;background:#e53935;transition:var(--t)}
+.fb-dot.ok{background:#51cf66}
+
+/* HERO */
+#hero{position:relative;overflow:hidden;height:52vw;min-height:300px;max-height:430px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px}
+.hero-ss{position:absolute;inset:0;z-index:0}
+.hero-sl{position:absolute;inset:0;background-size:cover;background-position:center;opacity:0;transition:opacity 1.2s ease}
+.hero-sl.active{opacity:1}
+.hero-ss::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(26,10,12,.55) 0%,rgba(26,10,12,.15) 50%,rgba(26,10,12,.7) 100%);z-index:1}
+.hero-c{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center}
+#hero h1{font-family:'Cormorant Garamond',serif;color:#fff;font-size:clamp(1.9rem,6.5vw,3.2rem);line-height:1.1;margin-bottom:6px}
+#hero h1 em{color:var(--rose2);font-style:italic}
+#hero .hero-sub{color:rgba(255,255,255,.5);font-size:.68rem;letter-spacing:4px;text-transform:uppercase}
+.hero-div{width:40px;height:1.5px;background:linear-gradient(90deg,transparent,var(--rose2),transparent);margin:14px auto}
+.hero-tags{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.hero-tag{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.9);padding:5px 13px;border-radius:30px;font-size:.7rem;font-weight:500;backdrop-filter:blur(4px)}
+.hero-loc{display:inline-flex;align-items:center;gap:7px;margin-top:14px;background:linear-gradient(135deg,var(--rose),var(--rose2));color:#fff;font-size:.75rem;font-weight:700;padding:9px 18px;border-radius:30px;border:none;cursor:pointer;text-decoration:none;box-shadow:0 4px 14px rgba(184,124,116,.4);transition:var(--t)}
+.hero-loc:hover{transform:translateY(-2px);box-shadow:0 7px 22px rgba(184,124,116,.5)}
+.hero-loc svg{width:14px;height:14px;fill:currentColor;flex-shrink:0}
+.hero-dots{display:flex;gap:5px;justify-content:center;margin-top:12px;position:relative;z-index:2}
+.hero-dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.3);border:none;cursor:pointer;padding:0;transition:all .3s}
+.hero-dot.active{background:var(--rose2);width:20px;border-radius:4px}
+
+/* PROMO BANNIÈRE */
+#promoBanner{background:linear-gradient(135deg,var(--gold),var(--gold3));color:#fff;text-align:center;padding:9px 16px;font-size:.76rem;font-weight:700;letter-spacing:.3px;display:none;position:relative}
+#promoBanner.show{display:block}
+#promoBanner .promo-close{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.2);border:none;color:#fff;width:22px;height:22px;border-radius:50%;cursor:pointer;font-size:.8rem;display:flex;align-items:center;justify-content:center}
+
+/* GENRE SWITCH */
+#genreBar{background:var(--white);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;justify-content:center;gap:8px;position:sticky;top:56px;z-index:450;box-shadow:var(--shadow-sm)}
+.genre-btn{display:flex;align-items:center;gap:6px;padding:8px 20px;border-radius:30px;border:2px solid var(--border);background:var(--lite);color:var(--mid);font-size:.78rem;font-weight:700;cursor:pointer;transition:var(--t)}
+.genre-btn.active-f{border-color:var(--rose);background:var(--rose3);color:var(--rose)}
+.genre-btn.active-m{border-color:var(--blue);background:var(--blue2);color:var(--blue)}
+.genre-btn.active-all{border-color:var(--gold);background:var(--gold2);color:var(--gold3)}
+.genre-sep{width:1px;height:24px;background:var(--border)}
+
+/* TABS CATÉGORIES */
+#tabsWrap{background:var(--white);border-bottom:1px solid var(--border);position:sticky;top:102px;z-index:400;box-shadow:var(--shadow-sm)}
+#tabs{display:flex;gap:0;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:0 8px}
+#tabs::-webkit-scrollbar{display:none}
+.tab-btn{flex-shrink:0;padding:12px 16px;border:none;background:none;color:var(--mid);font-size:.78rem;font-weight:600;cursor:pointer;border-bottom:2.5px solid transparent;transition:var(--t);white-space:nowrap;display:flex;align-items:center;gap:5px}
+.tab-btn:hover{color:var(--rose)}
+.tab-btn.active{color:var(--rose);border-bottom-color:var(--rose)}
+
+/* SEARCH BAR */
+.search-wrap{padding:12px 16px 4px;max-width:700px;margin:0 auto;width:100%}
+.search-box{display:flex;align-items:center;gap:10px;background:var(--white);border:1.5px solid var(--border);border-radius:30px;padding:8px 16px;box-shadow:var(--shadow-sm);transition:var(--t)}
+.search-box:focus-within{border-color:var(--rose);box-shadow:0 0 0 3px rgba(184,124,116,.12)}
+.search-box svg{width:16px;height:16px;fill:var(--muted);flex-shrink:0}
+.search-box input{flex:1;border:none;background:none;outline:none;font-size:.85rem;color:var(--dark)}
+.search-box input::placeholder{color:var(--muted)}
+
+/* CATALOGUE GRID */
+#catalogWrap{padding:12px 12px 32px;max-width:900px;margin:0 auto}
+.section-title{font-family:'Cormorant Garamond',serif;font-size:1.5rem;font-weight:700;color:var(--dark);margin:16px 4px 12px;display:flex;align-items:center;gap:10px}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border)}
+#grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(min-width:760px){#grid{grid-template-columns:repeat(3,1fr)}}
+
+/* CARD */
+.card{background:var(--white);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow-sm);border:1px solid var(--border);transition:transform var(--t),box-shadow var(--t);display:flex;flex-direction:column}
+.card:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+.card-img-wrap{position:relative;padding-top:72%;overflow:hidden;background:var(--rose3)}
+.card-img-wrap img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .4s ease}
+.card:hover .card-img-wrap img{transform:scale(1.04)}
+.card-indispo{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center}
+.card-indispo span{background:var(--red);color:#fff;font-size:.65rem;font-weight:800;padding:5px 12px;border-radius:20px;letter-spacing:.5px;text-transform:uppercase}
+.card-badge{position:absolute;top:8px;left:8px;background:linear-gradient(135deg,var(--rose),var(--rose2));color:#fff;font-size:.6rem;font-weight:800;padding:3px 9px;border-radius:10px;letter-spacing:.3px;text-transform:uppercase}
+.card-genre{position:absolute;top:8px;right:8px;font-size:.65rem;font-weight:800;padding:3px 8px;border-radius:10px;letter-spacing:.3px}
+.card-genre.f{background:var(--rose3);color:var(--rose);border:1px solid var(--rose2)}
+.card-genre.m{background:var(--blue2);color:var(--blue);border:1px solid var(--blue)}
+.card-genre.mf{background:var(--gold2);color:var(--gold3);border:1px solid var(--gold)}
+.card-body{padding:11px 12px 13px;display:flex;flex-direction:column;flex:1;gap:6px}
+.card-name{font-family:'Cormorant Garamond',serif;font-size:1.05rem;font-weight:700;color:var(--dark);line-height:1.2}
+.card-desc{font-size:.72rem;color:var(--mid);line-height:1.45;flex:1}
+.card-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+.card-price{font-size:.88rem;font-weight:800;color:var(--rose)}
+.card-price small{font-size:.65rem;font-weight:500;color:var(--muted)}
+.card-duree{font-size:.66rem;color:var(--muted);display:flex;align-items:center;gap:3px;background:var(--rose3);padding:3px 8px;border-radius:10px}
+.card-duree svg{width:11px;height:11px;fill:var(--rose)}
+.card-opts{display:flex;gap:5px;flex-wrap:wrap;margin-top:2px}
+.opt-pill{font-size:.64rem;font-weight:600;padding:3px 9px;border-radius:10px;border:1.5px solid var(--border);color:var(--mid);background:var(--lite);cursor:pointer;transition:var(--t)}
+.opt-pill.active,.opt-pill:hover{border-color:var(--rose);color:var(--rose);background:var(--rose3)}
+.card-btns{display:flex;gap:6px;margin-top:8px}
+.btn-wa-card{flex:1;background:linear-gradient(135deg,var(--wa),var(--wa2));color:#fff;border:none;border-radius:var(--r-sm);padding:9px 6px;font-size:.72rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;transition:var(--t);letter-spacing:.2px}
+.btn-wa-card:hover{opacity:.9;transform:translateY(-1px)}
+.btn-wa-card svg{width:14px;height:14px;fill:currentColor;flex-shrink:0}
+.btn-info-card{width:36px;height:36px;background:var(--rose3);border:1.5px solid var(--border);border-radius:var(--r-sm);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:var(--t);flex-shrink:0}
+.btn-info-card:hover{background:var(--rose);border-color:var(--rose)}
+.btn-info-card:hover svg{fill:#fff}
+.btn-info-card svg{width:15px;height:15px;fill:var(--rose);transition:var(--t)}
+
+/* ÉQUIPE */
+#equipe{background:var(--rose4);padding:28px 16px 36px;border-top:1px solid var(--border)}
+.equipe-title{font-family:'Cormorant Garamond',serif;font-size:1.7rem;font-weight:700;text-align:center;color:var(--dark);margin-bottom:4px}
+.equipe-sub{text-align:center;color:var(--muted);font-size:.75rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:20px}
+.equipe-scroll{display:flex;gap:14px;overflow-x:auto;scrollbar-width:none;padding:4px 4px 8px;-webkit-overflow-scrolling:touch}
+.equipe-scroll::-webkit-scrollbar{display:none}
+.coiffeur-card{flex-shrink:0;background:var(--white);border-radius:var(--r-lg);padding:16px;width:160px;text-align:center;box-shadow:var(--shadow-sm);border:1px solid var(--border);cursor:pointer;transition:var(--t)}
+.coiffeur-card:hover{transform:translateY(-3px);box-shadow:var(--shadow);border-color:var(--rose)}
+.coiffeur-card.selected{border-color:var(--rose);box-shadow:0 0 0 2px var(--rose)}
+.coiffeur-avatar{width:72px;height:72px;border-radius:50%;object-fit:cover;margin:0 auto 10px;border:3px solid var(--rose3)}
+.coiffeur-avatar-placeholder{width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--rose3),var(--rose2));margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:1.8rem;border:3px solid var(--rose3)}
+.coiffeur-name{font-weight:700;font-size:.88rem;color:var(--dark);margin-bottom:3px}
+.coiffeur-spe{font-size:.68rem;color:var(--mid);line-height:1.4}
+.coiffeur-badge{display:inline-block;margin-top:6px;font-size:.6rem;font-weight:700;padding:2px 8px;border-radius:10px}
+.coiffeur-badge.f{background:var(--rose3);color:var(--rose)}
+.coiffeur-badge.m{background:var(--blue2);color:var(--blue)}
+.coiffeur-badge.mf{background:var(--gold2);color:var(--gold3)}
+
+/* GALERIE AVANT/APRÈS */
+#galerie{background:var(--white);padding:28px 16px 36px;border-top:1px solid var(--border)}
+.gal-title{font-family:'Cormorant Garamond',serif;font-size:1.7rem;font-weight:700;text-align:center;color:var(--dark);margin-bottom:4px}
+.gal-sub{text-align:center;color:var(--muted);font-size:.75rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:16px}
+.gal-filter{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:20px}
+.gal-f-btn{padding:6px 16px;border-radius:20px;border:1.5px solid var(--border);background:var(--lite);color:var(--mid);font-size:.72rem;font-weight:600;cursor:pointer;transition:var(--t)}
+.gal-f-btn.active{border-color:var(--rose);background:var(--rose3);color:var(--rose)}
+.gal-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;max-width:700px;margin:0 auto}
+@media(min-width:540px){.gal-grid{grid-template-columns:repeat(3,1fr)}}
+.gal-item{position:relative;border-radius:var(--r);overflow:hidden;cursor:pointer;background:var(--rose3)}
+.gal-item-inner{position:relative;padding-top:100%}
+.gal-item img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .4s ease}
+.gal-item:hover img{transform:scale(1.06)}
+.gal-label{position:absolute;bottom:0;left:0;right:0;padding:6px 10px;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#fff;background:linear-gradient(0deg,rgba(0,0,0,.6),transparent)}
+.gal-genre-tag{position:absolute;top:7px;right:7px;font-size:.58rem;font-weight:800;padding:2px 7px;border-radius:8px}
+.gal-genre-tag.f{background:rgba(184,124,116,.85);color:#fff}
+.gal-genre-tag.m{background:rgba(74,144,217,.85);color:#fff}
+.gal-genre-tag.mf{background:rgba(201,168,76,.85);color:#fff}
+
+/* AVANT/APRÈS SLIDER */
+#avantApresModal{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:1200;display:none;align-items:center;justify-content:center;padding:16px}
+#avantApresModal.open{display:flex}
+.aa-box{background:var(--dark2);border-radius:var(--r-xl);overflow:hidden;width:100%;max-width:500px;box-shadow:var(--shadow-lg)}
+.aa-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.08)}
+.aa-head span{color:#fff;font-weight:700;font-size:.88rem}
+.aa-close{background:rgba(255,255,255,.1);border:none;color:#fff;width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:1rem}
+.aa-slider-wrap{position:relative;user-select:none}
+.aa-slider-wrap img{width:100%;display:block;max-height:380px;object-fit:cover}
+.aa-overlay{position:absolute;inset:0;overflow:hidden}
+.aa-overlay img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+.aa-divider{position:absolute;top:0;bottom:0;width:3px;background:#fff;cursor:ew-resize;z-index:10;transform:translateX(-50%)}
+.aa-divider::before{content:'◀▶';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;color:var(--dark2);font-size:.7rem;padding:4px 6px;border-radius:20px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.aa-labels{display:flex;justify-content:space-between;padding:10px 16px;background:rgba(0,0,0,.3)}
+.aa-labels span{font-size:.72rem;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.5px}
+
+/* AVIS CLIENTS */
+#avis{background:var(--rose4);padding:28px 16px 36px;border-top:1px solid var(--border)}
+.avis-title{font-family:'Cormorant Garamond',serif;font-size:1.7rem;font-weight:700;text-align:center;color:var(--dark);margin-bottom:4px}
+.avis-sub{text-align:center;color:var(--muted);font-size:.75rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:20px}
+.avis-scroll{display:flex;gap:12px;overflow-x:auto;scrollbar-width:none;padding:4px 4px 8px}
+.avis-scroll::-webkit-scrollbar{display:none}
+.avis-card{flex-shrink:0;background:var(--white);border-radius:var(--r-lg);padding:16px;width:240px;box-shadow:var(--shadow-sm);border:1px solid var(--border)}
+.avis-stars{color:var(--gold);font-size:.9rem;margin-bottom:8px}
+.avis-text{font-size:.78rem;color:var(--mid);line-height:1.5;font-style:italic;margin-bottom:10px}
+.avis-author{font-size:.72rem;font-weight:700;color:var(--dark);display:flex;align-items:center;gap:6px}
+.avis-author-dot{width:6px;height:6px;border-radius:50%;background:var(--rose)}
+.avis-add-btn{display:block;margin:20px auto 0;padding:10px 24px;border-radius:30px;background:linear-gradient(135deg,var(--rose),var(--rose2));color:#fff;border:none;font-size:.78rem;font-weight:700;cursor:pointer;transition:var(--t)}
+.avis-add-btn:hover{opacity:.9;transform:translateY(-1px)}
+
+/* LOCALISATION */
+#localisation{padding:28px 16px;text-align:center;background:var(--rose4);border-top:1px solid var(--border)}
+.loc-title{font-family:'Cormorant Garamond',serif;font-size:1.5rem;font-weight:700;color:var(--dark);margin-bottom:6px}
+.loc-adresse{color:var(--mid);font-size:.82rem;margin-bottom:16px}
+.loc-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.btn-maps{display:inline-flex;align-items:center;gap:7px;background:var(--dark2);color:#fff;padding:10px 20px;border-radius:30px;font-size:.78rem;font-weight:700;text-decoration:none;transition:var(--t);border:none;cursor:pointer}
+.btn-maps:hover{background:var(--dark);transform:translateY(-1px)}
+.btn-maps svg{width:14px;height:14px;fill:currentColor}
+.btn-wa-loc{display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,var(--wa),var(--wa2));color:#fff;padding:10px 20px;border-radius:30px;font-size:.78rem;font-weight:700;text-decoration:none;transition:var(--t);border:none;cursor:pointer}
+.btn-wa-loc:hover{opacity:.9;transform:translateY(-1px)}
+.btn-wa-loc svg{width:14px;height:14px;fill:currentColor}
+.horaires{display:inline-block;margin-top:14px;background:var(--white);border:1px solid var(--border);border-radius:var(--r);padding:12px 20px;font-size:.78rem;color:var(--mid)}
+.horaires strong{color:var(--dark)}
+.lo-body{padding:20px}
+
+/* MODAL RÉSERVATION */
+#resaModal{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;display:none;align-items:flex-end;justify-content:center;backdrop-filter:blur(4px)}
+#resaModal.open{display:flex}
+.resa-sheet{background:var(--white);border-radius:24px 24px 0 0;width:100%;max-width:560px;max-height:94vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.25);animation:slideUp .3s cubic-bezier(.4,0,.2,1)}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:none}}
+.resa-head{background:linear-gradient(135deg,var(--dark2),#3D2527);color:#fff;padding:20px 20px 16px;border-radius:24px 24px 0 0;display:flex;align-items:center;justify-content:space-between}
+.resa-head h3{font-family:'Cormorant Garamond',serif;font-size:1.4rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.resa-head h3 svg{width:20px;height:20px;fill:var(--rose2)}
+.resa-close{background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;transition:var(--t)}
+.resa-close:hover{background:rgba(255,255,255,.25)}
+.resa-body{padding:20px}
+.resa-preview{display:flex;align-items:center;gap:12px;background:var(--rose4);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:18px}
+.resa-preview img{width:56px;height:56px;border-radius:10px;object-fit:cover;flex-shrink:0;background:var(--rose3)}
+.resa-preview-info h4{font-family:'Cormorant Garamond',serif;font-size:1.1rem;font-weight:700;color:var(--dark)}
+.resa-preview-info p{font-size:.75rem;color:var(--mid);margin-top:2px}
+.resa-preview-price{margin-left:auto;font-size:.95rem;font-weight:800;color:var(--rose);white-space:nowrap}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:.75rem;font-weight:700;color:var(--mid);margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.form-control{width:100%;border:1.5px solid var(--border);border-radius:var(--r-sm);padding:10px 14px;font-size:.88rem;color:var(--dark);background:var(--white);outline:none;transition:var(--t)}
+.form-control:focus{border-color:var(--rose);box-shadow:0 0 0 3px rgba(184,124,116,.12)}
+.form-row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.resa-opt-label{font-size:.75rem;font-weight:700;color:var(--mid);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px}
+.resa-opts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.resa-opt{padding:7px 14px;border:1.5px solid var(--border);border-radius:30px;font-size:.78rem;font-weight:600;cursor:pointer;transition:var(--t);color:var(--mid);background:var(--lite)}
+.resa-opt.active{border-color:var(--rose);color:var(--rose);background:var(--rose3)}
+.resa-coiffeurs{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;padding:4px 2px 8px;margin-bottom:14px}
+.resa-coiffeurs::-webkit-scrollbar{display:none}
+.resa-coif-item{flex-shrink:0;text-align:center;cursor:pointer;padding:8px 10px;border-radius:var(--r);border:1.5px solid var(--border);transition:var(--t);min-width:72px}
+.resa-coif-item:hover,.resa-coif-item.selected{border-color:var(--rose);background:var(--rose3)}
+.resa-coif-item img,.resa-coif-item .rci-avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;margin:0 auto 5px}
+.rci-avatar{background:linear-gradient(135deg,var(--rose3),var(--rose2));display:flex;align-items:center;justify-content:center;font-size:1.2rem}
+.resa-coif-item span{font-size:.65rem;font-weight:700;color:var(--dark);display:block}
+.btn-send-wa{width:100%;background:linear-gradient(135deg,var(--wa),var(--wa2));color:#fff;border:none;border-radius:var(--r);padding:14px;font-size:.92rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:var(--t);margin-top:6px;letter-spacing:.3px;box-shadow:0 4px 14px rgba(37,211,102,.35)}
+.btn-send-wa:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 7px 22px rgba(37,211,102,.45)}
+.btn-send-wa svg{width:18px;height:18px;fill:currentColor}
+.btn-send-wa-sec{width:100%;background:var(--lite);color:var(--dark);border:1.5px solid var(--border);border-radius:var(--r);padding:12px;font-size:.84rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:var(--t);margin-top:8px}
+.btn-send-wa-sec:hover{border-color:var(--rose);color:var(--rose)}
+
+/* MODAL AVIS */
+#avisModal{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:950;display:none;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px)}
+#avisModal.open{display:flex}
+.avis-box{background:var(--white);border-radius:var(--r-xl);width:100%;max-width:420px;padding:28px;box-shadow:var(--shadow-lg)}
+.avis-box h3{font-family:'Cormorant Garamond',serif;font-size:1.4rem;font-weight:700;color:var(--dark);margin-bottom:16px}
+.star-picker{display:flex;gap:6px;margin-bottom:16px}
+.star-picker span{font-size:1.6rem;cursor:pointer;transition:transform .15s}
+.star-picker span:hover{transform:scale(1.2)}
+
+/* MODAL DÉTAIL */
+#detailModal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:850;display:none;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px)}
+#detailModal.open{display:flex}
+.detail-box{background:var(--white);border-radius:var(--r-xl);width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:popIn .3s cubic-bezier(.34,1.56,.64,1)}
+@keyframes popIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+.detail-img{width:100%;padding-top:56%;position:relative;border-radius:var(--r-xl) var(--r-xl) 0 0;overflow:hidden;background:var(--rose3)}
+.detail-img img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.detail-close-btn{position:absolute;top:12px;right:12px;background:rgba(0,0,0,.5);color:#fff;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.detail-body{padding:20px}
+.detail-name{font-family:'Cormorant Garamond',serif;font-size:1.6rem;font-weight:700;color:var(--dark);margin-bottom:4px}
+.detail-desc{color:var(--mid);font-size:.84rem;line-height:1.5;margin-bottom:14px}
+.detail-meta{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.detail-pill{display:flex;align-items:center;gap:5px;background:var(--rose3);border:1px solid var(--border);border-radius:20px;padding:5px 12px;font-size:.74rem;font-weight:600;color:var(--rose)}
+.detail-pill svg{width:13px;height:13px;fill:currentColor}
+
+/* ── PANEL ADMIN ── */
+#adminModal{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:1000;display:none;flex-direction:column;backdrop-filter:blur(10px)}
+#adminModal.open{display:flex}
+.admin-head{background:linear-gradient(135deg,var(--dark2),#2C1B1C);color:#fff;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,.08)}
+.admin-head h2{font-family:'Cormorant Garamond',serif;font-size:1.4rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.admin-head h2 svg{width:20px;height:20px;fill:var(--rose2)}
+.admin-tabs{display:flex;gap:0;background:rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0;overflow-x:auto;scrollbar-width:none}
+.admin-tabs::-webkit-scrollbar{display:none}
+.admin-tab{flex-shrink:0;padding:12px 14px;border:none;background:none;color:rgba(255,255,255,.5);font-size:.72rem;font-weight:600;cursor:pointer;transition:var(--t);border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+.admin-tab.active{color:#fff;border-bottom-color:var(--rose2)}
+.admin-body{flex:1;overflow-y:auto;padding:20px}
+.admin-section{display:none}.admin-section.active{display:block}
+.admin-form{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:var(--r);padding:16px;margin-bottom:16px}
+.admin-form h4{color:#fff;font-size:.82rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:12px}
+.admin-input{width:100%;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.12);border-radius:var(--r-sm);padding:9px 13px;color:#fff;font-size:.84rem;outline:none;transition:var(--t);font-family:'DM Sans',sans-serif}
+.admin-input:focus{border-color:var(--rose2);background:rgba(255,255,255,.1)}
+.admin-input::placeholder{color:rgba(255,255,255,.3)}
+.admin-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.admin-row3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}
+.admin-label{display:block;font-size:.68rem;font-weight:700;color:rgba(255,255,255,.45);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+.btn-admin-save{background:linear-gradient(135deg,var(--rose),var(--rose2));color:#fff;border:none;border-radius:var(--r-sm);padding:9px 18px;font-size:.8rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px;transition:var(--t)}
+.btn-admin-save:hover{opacity:.88}
+.btn-admin-del{background:rgba(192,57,43,.15);border:1.5px solid rgba(192,57,43,.3);color:#e57373;border-radius:var(--r-sm);padding:9px 14px;font-size:.8rem;font-weight:700;cursor:pointer;transition:var(--t)}
+.btn-admin-del:hover{background:rgba(192,57,43,.3)}
+.resa-card{background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:var(--r);padding:14px;margin-bottom:10px}
+.resa-card.new{border-color:rgba(184,124,116,.5);box-shadow:0 0 0 2px rgba(184,124,116,.15)}
+.resa-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px}
+.resa-card-name{font-weight:700;color:#fff;font-size:.9rem}
+.resa-card-time{font-size:.68rem;color:rgba(255,255,255,.4)}
+.resa-card-coif{font-size:.78rem;color:rgba(255,255,255,.65);margin-bottom:6px}
+.resa-card-detail{font-size:.72rem;color:rgba(255,255,255,.4)}
+.statut-btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;border-top:1px solid rgba(255,255,255,.06);padding-top:10px}
+.s-btn{padding:5px 12px;border-radius:20px;font-size:.68rem;font-weight:700;cursor:pointer;border:1.5px solid;transition:var(--t)}
+.s-btn.attente{border-color:rgba(230,126,34,.4);color:#f39c12;background:rgba(230,126,34,.1)}
+.s-btn.cours{border-color:rgba(41,182,246,.4);color:#29b6f6;background:rgba(41,182,246,.1)}
+.s-btn.termine{border-color:rgba(39,174,96,.4);color:#27ae60;background:rgba(39,174,96,.1)}
+.s-btn:hover{opacity:.8}
+.statut-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.statut-badge.en_attente{background:rgba(230,126,34,.15);color:#f39c12;border:1px solid rgba(230,126,34,.3)}
+.statut-badge.en_cours{background:rgba(41,182,246,.15);color:#29b6f6;border:1px solid rgba(41,182,246,.3)}
+.statut-badge.termine{background:rgba(39,174,96,.15);color:#27ae60;border:1px solid rgba(39,174,96,.3)}
+
+/* ── MODAL PIN ── */
+#pinModal{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1100;display:none;align-items:center;justify-content:center;backdrop-filter:blur(8px)}
+#pinModal.open{display:flex}
+.pin-box{background:var(--dark2);border:1px solid rgba(255,255,255,.1);border-radius:var(--r-xl);padding:32px 28px;text-align:center;max-width:320px;width:90%}
+.pin-box h3{font-family:'Cormorant Garamond',serif;color:#fff;font-size:1.5rem;font-weight:700;margin-bottom:6px}
+.pin-box p{color:rgba(255,255,255,.4);font-size:.78rem;margin-bottom:20px}
+#pinInput{width:100%;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.15);border-radius:var(--r-sm);padding:12px;color:#fff;font-size:1.2rem;text-align:center;letter-spacing:8px;outline:none;font-family:'DM Sans',sans-serif}
+#pinInput:focus{border-color:var(--rose2)}
+.pin-btns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.btn-pin{padding:10px;border-radius:var(--r-sm);font-size:.82rem;font-weight:700;cursor:pointer;border:none;transition:var(--t)}
+.btn-pin-ok{background:var(--rose);color:#fff}.btn-pin-ok:hover{background:var(--rose2)}
+.btn-pin-cancel{background:rgba(255,255,255,.08);color:rgba(255,255,255,.7)}.btn-pin-cancel:hover{background:rgba(255,255,255,.15)}
+
+/* TOAST */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--dark2);color:#fff;padding:11px 22px;border-radius:40px;font-size:.82rem;z-index:1500;transition:.32s cubic-bezier(.4,0,.2,1);opacity:0;white-space:nowrap;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,.25);font-weight:600;max-width:88vw}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+#toast.green{background:linear-gradient(135deg,var(--green),#219a52)}
+#toast.rose{background:linear-gradient(135deg,var(--rose),var(--rose2))}
+#toast.red{background:linear-gradient(135deg,var(--red),#e74c3c)}
+
+/* SCROLL TOP */
+#scrollTop{position:fixed;bottom:24px;right:16px;width:42px;height:42px;background:var(--rose);color:#fff;border:none;border-radius:50%;cursor:pointer;opacity:0;transition:var(--t);z-index:300;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(184,124,116,.4)}
+#scrollTop.show{opacity:1}
+#scrollTop svg{width:18px;height:18px;fill:currentColor}
+
+/* NO RESULT */
+.no-result{grid-column:1/-1;text-align:center;padding:48px 20px;color:var(--muted)}
+.no-result svg{width:48px;height:48px;fill:var(--border);margin:0 auto 12px;display:block}
+
+/* FOOTER & TICKER */
+footer{text-align:center;padding:20px;font-size:.68rem;color:var(--muted);border-top:1px solid var(--border)}
+#tickerBar{position:fixed;bottom:0;left:0;right:0;background:var(--dark2);color:#fff;padding:8px 0;z-index:400;overflow:hidden;white-space:nowrap;border-top:1px solid rgba(255,255,255,.1);box-shadow:0 -2px 10px rgba(0,0,0,.2)}
+.ticker-content{display:inline-block;animation: tickerScroll linear infinite;white-space: nowrap;padding-right:50px}
+.ticker-item{display:inline-block;margin-right:48px;font-size:.78rem;font-weight:500}
+.ticker-item a{color:inherit;text-decoration:none}
+@keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+/* TV MODE (FULLSCREEN) */
+.tv-mode-active{overflow:hidden;height:100vh;margin:0;padding:0}
+.tv-mode-active body{overflow:hidden;height:100vh}
+#tvContainer{position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:2000;display:none;flex-direction:column;align-items:center;justify-content:center}
+#tvContainer.open{display:flex}
+.tv-media{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative}
+.tv-media img{max-width:100%;max-height:100%;object-fit:contain}
+.tv-media video{max-width:100%;max-height:100%;object-fit:contain}
+.tv-media audio{width:80%;position:absolute;bottom:40px;left:10%;z-index:2002}
+.tv-controls{position:absolute;bottom:20px;right:20px;display:flex;gap:10px;z-index:2001}
+.tv-controls button{background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.3);color:#fff;width:44px;height:44px;border-radius:30px;cursor:pointer;font-size:1.2rem;backdrop-filter:blur(4px)}
+.tv-close{position:absolute;top:20px;right:20px;background:rgba(0,0,0,.6);border:none;color:#fff;width:44px;height:44px;border-radius:30px;cursor:pointer;font-size:1.2rem;z-index:2001}
+.tv-info{position:absolute;bottom:20px;left:20px;color:#fff;background:rgba(0,0,0,.5);padding:8px 15px;border-radius:20px;font-size:.8rem;z-index:2001}
+.tv-mode-badge{background:var(--rose);color:#fff;padding:4px 10px;border-radius:20px;font-size:.7rem;font-weight:bold;margin-left:8px;cursor:pointer}
+@media(max-width:380px){
+  #grid{grid-template-columns:1fr}
+  .form-row2{grid-template-columns:1fr}
+  .admin-row2,.admin-row3{grid-template-columns:1fr}
+}
+@media(max-width:540px){.lo-body{padding:14px}}
+</style>
+</head>
+<body>
+
+<!-- CONFIGURATION -->
+<script>
+window.SALON_CONFIG = {
+  nom:       "BEAUTIFUL HAIRSTYLES",
+  slogan:    "L'art de la coiffure africaine",
+  ville:     "Ouagadougou · Burkina Faso",
+  whatsapp:  "22655700383",
+  maps:      "https://maps.google.com/?q=12.386600,-1.602619",
+  adresse:   "Secteur 38, Arrondissement 8°",
+  horaires:  "Lun–Sam : 8h–20h  ·  Dim : 9h–18h",
+  tiktok:    "https://www.tiktok.com/@beautifulhairstyle3",
+  facebook:  "https://www.facebook.com/votre_page",
+  logo:      "logo.png",
+  adminPin:  "1234",
+  promo:     "",
+
+  slides: [
+    "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=900&q=80",
+    "https://images.unsplash.com/photo-1562322140-8baeececf3df?w=900&q=80",
+    "https://images.unsplash.com/photo-1560066984-138daaa8eded?w=900&q=80",
+  ],
+
+  galerie: [
+    { img:"https://images.unsplash.com/photo-1590577976322-3d2d6a2130e5?w=500&q=75", label:"Box Braids", genre:"f", avant:"", apres:"https://images.unsplash.com/photo-1590577976322-3d2d6a2130e5?w=500&q=75" },
+    { img:"https://images.unsplash.com/photo-1614289371518-722f2615943d?w=500&q=75", label:"Cornrows", genre:"f" },
+    { img:"https://images.unsplash.com/photo-1605980776566-0486c3ac7617?w=500&q=75", label:"Locks", genre:"f" },
+    { img:"https://images.unsplash.com/photo-1562322140-8baeececf3df?w=500&q=75", label:"Coupe Homme", genre:"m" },
+    { img:"https://images.unsplash.com/photo-1580618672591-eb180b1a973f?w=500&q=75", label:"Crochet Braids", genre:"f" },
+    { img:"https://images.unsplash.com/photo-1560066984-138daaa8eded?w=500&q=75", label:"Coloration", genre:"mf" },
+  ],
+
+  avis: [
+    { nom:"Aminata D.", note:5, texte:"Magnifique travail sur mes tresses ! Le salon est propre, l'équipe à l'écoute. Je reviendrai sûrement.", genre:"f" },
+    { nom:"Seydou K.", note:5, texte:"Excellent dégradé, le coiffeur connaît son métier. Ambiance top.", genre:"m" },
+    { nom:"Fatou T.", note:4, texte:"Très beau tissage, bien posé. Le salon est accueillant.", genre:"f" },
+  ],
+
+  firebase: {
+    apiKey: "AIzaSyALuXs5scz3O1uzC7PJ6Z-RY608ilFBMrg",
+    authDomain: "posv5-78b92.firebaseapp.com",
+    databaseURL: "https://posv5-78b92-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "posv5-78b92",
+    storageBucket: "posv5-78b92.firebasestorage.app",
+    messagingSenderId: "508434695902",
+    appId: "1:508434695902:web:a3861784fb24a10c06244f"
+  }
+};
+
+window.COIFFEURS_DEFAULT = [
+  { id:'e1', nom:'Mariam', specialite:'Tresses · Locks · Tissage', genre:'f', dispo:true, emoji:'👩' },
+  { id:'e2', nom:'Kofi',   specialite:'Coupe · Dégradé · Barbe',  genre:'m', dispo:true, emoji:'👨' },
+  { id:'e3', nom:'Aïda',   specialite:'Coloration · Soins',        genre:'f', dispo:true, emoji:'👩' },
+  { id:'e4', nom:'Idriss', specialite:'Locks · Coupe · Tresses',   genre:'mf',dispo:true, emoji:'🧑' },
+];
+
+window.COIFFURES_DEFAULT = [
+  { id:'c1', cat:'tresses', genre:'f', nom:'Box Braids', desc:'Tresses carrées classiques, légères et durables.', prixBase:8000, prixMeches:12000, duree:'3–5h', img:'https://images.unsplash.com/photo-1590577976322-3d2d6a2130e5?w=400&q=75', dispo:true, badge:'Populaire' },
+  { id:'c2', cat:'tresses', genre:'f', nom:'Tresses Cornrows', desc:'Tresses plates collées au crâne avec motifs variés.', prixBase:5000, prixMeches:8000, duree:'2–3h', img:'https://images.unsplash.com/photo-1614289371518-722f2615943d?w=400&q=75', dispo:true },
+  { id:'c3', cat:'locks',   genre:'f', nom:'Locks Sénégalaises', desc:'Locks torsadées élégantes pour un look naturel.', prixBase:10000, prixMeches:15000, duree:'4–6h', img:'https://images.unsplash.com/photo-1605980776566-0486c3ac7617?w=400&q=75', dispo:true, badge:'Nouveau' },
+  { id:'c4', cat:'tissage', genre:'f', nom:'Tissage Naturel', desc:'Pose de tissage sur tresses plates. Volume au choix.', prixBase:12000, prixMeches:20000, duree:'3–5h', img:'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400&q=75', dispo:true },
+  { id:'c5', cat:'tissage', genre:'f', nom:'Crochet Braids', desc:'Mèches crochetées sur cornrows. Résultat naturel rapide.', prixBase:9000, prixMeches:14000, duree:'2–4h', img:'https://images.unsplash.com/photo-1580618672591-eb180b1a973f?w=400&q=75', dispo:true },
+  { id:'c6', cat:'coloration', genre:'mf', nom:'Coloration Complète', desc:'Couleur racines et longueurs. Noir, châtain, blond, bordeaux…', prixBase:15000, prixMeches:null, duree:'2–3h', img:'https://images.unsplash.com/photo-1560066984-138daaa8eded?w=400&q=75', dispo:true },
+  { id:'c7', cat:'soins',   genre:'mf', nom:'Soin Hydratant', desc:'Masque nourrissant, lissage et brillance.', prixBase:6000, prixMeches:null, duree:'1–2h', img:'https://images.unsplash.com/photo-1616394584738-fc6e612e71b9?w=400&q=75', dispo:true },
+  { id:'c8', cat:'coupe',   genre:'f', nom:'Coupe & Brushing', desc:'Coupe personnalisée + brushing volume ou lissé.', prixBase:5000, prixMeches:null, duree:'1h', img:'https://images.unsplash.com/photo-1562322140-8baeececf3df?w=400&q=75', dispo:true },
+  { id:'c9',  cat:'coupe',  genre:'m', nom:'Coupe Homme', desc:'Coupe classique ou tendance selon morphologie.', prixBase:3000, prixMeches:null, duree:'45min', img:'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?w=400&q=75', dispo:true, badge:'Rapide' },
+  { id:'c10', cat:'coupe',  genre:'m', nom:'Dégradé', desc:'Dégradé bas, mi-haut ou haut. Contour net inclus.', prixBase:3500, prixMeches:null, duree:'45min', img:'https://images.unsplash.com/photo-1519345182560-3f2917c472ef?w=400&q=75', dispo:true, badge:'Populaire' },
+  { id:'c11', cat:'barbe',  genre:'m', nom:'Taille de Barbe', desc:'Contour, dégradé barbe et finitions soignées.', prixBase:2500, prixMeches:null, duree:'30min', img:'https://images.unsplash.com/photo-1621605815971-fbc98d665033?w=400&q=75', dispo:true },
+  { id:'c12', cat:'barbe',  genre:'m', nom:'Rasage Traditionnel', desc:'Rasage à la lame chaude + serviette chaude. Pur luxe.', prixBase:4000, prixMeches:null, duree:'40min', img:'https://images.unsplash.com/photo-1517832207067-4db24a2ae47c?w=400&q=75', dispo:true, badge:'Premium' },
+  { id:'c13', cat:'locks',  genre:'m', nom:'Locks Homme', desc:'Pose ou entretien de locks naturels.', prixBase:8000, prixMeches:null, duree:'3–4h', img:'https://images.unsplash.com/photo-1534614971-6be99a7a3ffd?w=400&q=75', dispo:true },
+];
+
+window.COIFFEURS = [...window.COIFFEURS_DEFAULT];
+window.CATEGORIES = [
+  { id:'toutes',    label:'Toutes',      emoji:'✨', genre:'all' },
+  { id:'tresses',   label:'Tresses',     emoji:'💫', genre:'f'   },
+  { id:'locks',     label:'Locks',       emoji:'🌿', genre:'mf'  },
+  { id:'tissage',   label:'Tissage',     emoji:'👑', genre:'f'   },
+  { id:'coloration',label:'Coloration',  emoji:'🎨', genre:'mf'  },
+  { id:'soins',     label:'Soins',       emoji:'💆', genre:'mf'  },
+  { id:'coupe',     label:'Coupe',       emoji:'✂️', genre:'mf'  },
+  { id:'barbe',     label:'Barbe',       emoji:'🪒', genre:'m'   },
+];
+</script>
+
+<!-- LOADER -->
+<div id="loader">
+  <div class="ld-logo" id="ldLogo">Salon <em>Belle</em></div>
+  <div class="ld-sub" id="ldSlogan">Chargement en cours…</div>
+  <div class="ld-bar"><div class="ld-fill"></div></div>
+  <div class="ld-dots"><div class="ld-dot"></div><div class="ld-dot"></div><div class="ld-dot"></div></div>
+</div>
+
+<!-- TOPBAR -->
+<div id="topbar">
+  <div class="t-brand" id="brandClick">
+    <div class="t-mark" id="brandMark">💇</div>
+    <div class="t-name" id="brandName">Salon <em>Belle</em></div>
+  </div>
+  <div class="t-actions">
+    <div class="fb-pill" title="État Firebase"><div class="fb-dot" id="fbDot"></div><span id="fbLabel">Local</span></div>
+    <button class="btn-i" onclick="toggleDark()" title="Mode sombre/clair">
+      <svg id="darkIco" viewBox="0 0 24 24"><path d="M12 3a9 9 0 100 18A9 9 0 0012 3zm0 2a7 7 0 010 14V5z"/></svg>
+    </button>
+    <button class="btn-i" onclick="openTvMode()" title="Mode TV">
+      <svg viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg>
+    </button>
+    <button class="btn-i btn-wa" onclick="openWaSalon()" title="Contacter">
+      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884"/></svg>
+      Écrire
+    </button>
+  </div>
+</div>
+
+<!-- PROMO BANNIÈRE -->
+<div id="promoBanner"><span id="promoText"></span><button class="promo-close" onclick="document.getElementById('promoBanner').classList.remove('show')">✕</button></div>
+
+<!-- HERO -->
+<div id="hero">
+  <div class="hero-ss" id="heroSS"></div>
+  <div class="hero-c">
+    <h1 id="heroTitle">Salon <em>Belle</em></h1>
+    <p class="hero-sub" id="heroVille">Ouagadougou · Burkina Faso</p>
+    <div class="hero-div"></div>
+    <div class="hero-tags">
+      <span class="hero-tag">✂️ Femme</span>
+      <span class="hero-tag">🪒 Homme</span>
+      <span class="hero-tag">🌿 Locks</span>
+      <span class="hero-tag">🎨 Coloration</span>
+    </div>
+    <a id="heroMapBtn" class="hero-loc" href="#" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+      Nous localiser
+    </a>
+    <div class="hero-dots" id="heroDots"></div>
+  </div>
+</div>
+
+<!-- GENRE SWITCH -->
+<div id="genreBar">
+  <button class="genre-btn active-all" onclick="setGenre('all',this)">✨ Tous</button>
+  <div class="genre-sep"></div>
+  <button class="genre-btn" onclick="setGenre('f',this)">👩 Femme</button>
+  <div class="genre-sep"></div>
+  <button class="genre-btn" onclick="setGenre('m',this)">🧔 Homme</button>
+</div>
+
+<!-- TABS CATÉGORIES -->
+<div id="tabsWrap"><div id="tabs"></div></div>
+
+<!-- CATALOGUE -->
+<div id="catalogWrap">
+  <div class="search-wrap">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      <input type="text" id="searchInput" placeholder="Rechercher une coiffure…" oninput="filterCatalog()"/>
+    </div>
+  </div>
+  <div class="section-title" id="sectionTitle">Toutes les coiffures</div>
+  <div id="grid"></div>
+</div>
+
+<!-- ÉQUIPE -->
+<div id="equipe">
+  <div class="equipe-title">Notre Équipe</div>
+  <div class="equipe-sub">Choisissez votre coiffeur·se</div>
+  <div class="equipe-scroll" id="equipeGrid"></div>
+</div>
+
+<!-- GALERIE AVANT/APRÈS -->
+<div id="galerie">
+  <div class="gal-title">Galerie</div>
+  <div class="gal-sub">Avant · Après · Inspirations</div>
+  <div class="gal-filter">
+    <button class="gal-f-btn active" onclick="setGalFilter('all',this)">✨ Tout</button>
+    <button class="gal-f-btn" onclick="setGalFilter('f',this)">👩 Femme</button>
+    <button class="gal-f-btn" onclick="setGalFilter('m',this)">🧔 Homme</button>
+    <button class="gal-f-btn" onclick="setGalFilter('mf',this)">🎨 Mixte</button>
+  </div>
+  <div class="gal-grid" id="galGrid"></div>
+</div>
+
+<!-- AVIS CLIENTS -->
+<div id="avis">
+  <div class="avis-title">Avis Clients</div>
+  <div class="avis-sub">Ce que disent nos clients</div>
+  <div class="avis-scroll" id="avisGrid"></div>
+  <button class="avis-add-btn" onclick="openAvisModal()">⭐ Laisser un avis</button>
+</div>
+
+<!-- LOCALISATION -->
+<div id="localisation">
+  <div class="loc-title">Nous trouver</div>
+  <div class="loc-adresse" id="locAdresse">—</div>
+  <div class="loc-btns">
+    <a id="locMapsBtn" href="#" target="_blank" rel="noopener" class="btn-maps">
+      <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+      Google Maps
+    </a>
+    <a id="locTiktokBtn" href="#" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,#010101,#2d2d2d);color:#fff;padding:10px 20px;border-radius:30px;font-size:.78rem;font-weight:700;text-decoration:none;transition:var(--t)">
+      <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 00-.79-.05 6.34 6.34 0 00-6.34 6.34 6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.33-6.34V8.69a8.18 8.18 0 004.79 1.53V6.78a4.85 4.85 0 01-1.02-.09z"/></svg>
+      TikTok
+    </a>
+    <a id="locFacebookBtn" href="#" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,#1877F2,#0d5fd4);color:#fff;padding:10px 20px;border-radius:30px;font-size:.78rem;font-weight:700;text-decoration:none;transition:var(--t)">
+      <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+      Facebook
+    </a>
+    <button class="btn-wa-loc" onclick="openWaSalon()">
+      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884"/></svg>
+      WhatsApp
+    </button>
+  </div>
+  <div class="horaires">
+    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:var(--rose);display:inline;vertical-align:middle;margin-right:4px"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+    <strong id="locHoraires">—</strong>
+  </div>
+</div>
+
+<footer>Conçu avec ❤️ · <span id="footerNom">Salon</span> · <a href="#" onclick="openAdmin()" style="color:var(--muted);text-decoration:none" title="Admin">⚙</a></footer>
+<button id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})"><svg viewBox="0 0 24 24"><path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg></button>
+<div id="toast"></div>
+
+<!-- TICKER BANDE DÉFILANTE -->
+<div id="tickerBar" style="display:none"><div class="ticker-content" id="tickerContent"></div></div>
+
+<!-- MODAL RÉSERVATION -->
+<div id="resaModal">
+  <div class="resa-sheet">
+    <div class="resa-head"><h3><svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>Réserver</h3><button class="resa-close" onclick="closeResa()">✕</button></div>
+    <div class="resa-body">
+      <div class="resa-preview" id="resaPreview"><img id="resaPreviewImg" src=""/><div class="resa-preview-info"><h4 id="resaPreviewNom">—</h4><p id="resaPreviewDuree">—</p></div><div class="resa-preview-price" id="resaPreviewPrix">—</div></div>
+      <div id="resaOptWrap" style="margin-bottom:14px"><div class="resa-opt-label">Options</div><div class="resa-opts" id="resaOpts"></div></div>
+      <div style="margin-bottom:14px"><div class="resa-opt-label">Choisir un·e coiffeur·se</div><div class="resa-coiffeurs" id="resaCoiffeurs"></div></div>
+      <div class="form-group"><label>Votre nom</label><input class="form-control" id="resaNom" type="text" placeholder="Prénom et nom"/></div>
+      <div class="form-row2"><div class="form-group"><label>Date souhaitée</label><input class="form-control" id="resaDate" type="date"/></div><div class="form-group"><label>Heure</label><input class="form-control" id="resaHeure" type="time" value="09:00"/></div></div>
+      <div class="form-group"><label>Message (optionnel)</label><textarea class="form-control" id="resaNote" rows="2" placeholder="Précisions, questions…"></textarea></div>
+      <button class="btn-send-wa" onclick="sendResaWA()"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884"/></svg>Envoyer sur WhatsApp</button>
+      <button class="btn-send-wa-sec" onclick="saveResaFirebase()">💾 Enregistrer sans WA</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL DÉTAIL -->
+<div id="detailModal"><div class="detail-box"><div class="detail-img"><img id="detailImg" src=""/><button class="detail-close-btn" onclick="closeDetail()">✕</button></div><div class="detail-body"><div class="detail-name" id="detailNom">—</div><div class="detail-desc" id="detailDesc">—</div><div class="detail-meta" id="detailMeta"></div><div class="resa-opts" id="detailOpts" style="margin-bottom:14px"></div><button class="btn-send-wa" onclick="openResaFromDetail()"><svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>Réserver cette coiffure</button></div></div></div>
+
+<!-- MODAL AVANT/APRÈS -->
+<div id="avantApresModal"><div class="aa-box"><div class="aa-head"><span id="aaTitle">Avant / Après</span><button class="aa-close" onclick="closeAA()">✕</button></div><div class="aa-slider-wrap" id="aaSliderWrap"><img id="aaApresImg" src=""/><div class="aa-overlay" id="aaOverlay" style="clip-path:inset(0 50% 0 0)"><img id="aaAvantImg" src=""/></div><div class="aa-divider" id="aaDivider" style="left:50%"></div></div><div class="aa-labels"><span>AVANT</span><span>APRÈS</span></div></div></div>
+
+<!-- MODAL AVIS -->
+<div id="avisModal"><div class="avis-box"><h3>⭐ Laisser un avis</h3><div class="form-group"><label>Votre nom</label><input class="form-control" id="avisNom" type="text" placeholder="Prénom"/></div><div class="form-group"><label>Note</label><div class="star-picker" id="starPicker"><span onclick="setNote(1)" data-n="1">⭐</span><span onclick="setNote(2)" data-n="2">⭐</span><span onclick="setNote(3)" data-n="3">⭐</span><span onclick="setNote(4)" data-n="4">⭐</span><span onclick="setNote(5)" data-n="5">⭐</span></div></div><div class="form-group"><label>Votre avis</label><textarea class="form-control" id="avisTexte" rows="3" placeholder="Partagez votre expérience…"></textarea></div><div style="display:flex;gap:8px;margin-top:4px"><button class="btn-send-wa" style="margin-top:0" onclick="submitAvis()">Publier via WhatsApp</button><button onclick="closeAvisModal()" style="padding:12px 16px;border-radius:var(--r);background:var(--lite);border:1.5px solid var(--border);color:var(--mid);font-weight:700;cursor:pointer;font-size:.84rem">Annuler</button></div></div></div>
+
+<!-- MODAL PIN ADMIN -->
+<div id="pinModal"><div class="pin-box"><h3>🔐 Administration</h3><p>Entrez votre code PIN pour accéder</p><input type="password" id="pinInput" maxlength="6" placeholder="••••" inputmode="numeric" onkeydown="if(event.key==='Enter')checkPin()"/><div class="pin-btns"><button class="btn-pin btn-pin-ok" onclick="checkPin()">Entrer</button><button class="btn-pin btn-pin-cancel" onclick="closePin()">Annuler</button></div></div></div>
+
+<!-- TV MODE CONTAINER -->
+<div id="tvContainer"><button class="tv-close" onclick="closeTvMode()">✕</button><div class="tv-controls"><button id="tvPrevBtn" onclick="tvPrev()">◀</button><button id="tvPlayPauseBtn" onclick="tvTogglePlay()">⏸</button><button id="tvNextBtn" onclick="tvNext()">▶</button></div><div class="tv-media" id="tvMedia"></div><div class="tv-info" id="tvInfo"></div></div>
+
+<!-- ADMIN MODAL -->
+<div id="adminModal">
+  <div class="admin-head"><h2><svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 018.5 12 3.5 3.5 0 0112 8.5a3.5 3.5 0 013.5 3.5 3.5 3.5 0 01-3.5 3.5m7.43-2.92c.04-.34.07-.69.07-1.08s-.03-.73-.07-1.08l2.31-1.81c.21-.16.27-.44.14-.67l-2.19-3.79c-.14-.23-.41-.3-.64-.21l-2.72 1.09c-.57-.43-1.17-.79-1.83-1.07L14.02 3.1A.517.517 0 0013.5 2.7h-3c-.25 0-.46.18-.5.42L9.66 5.44c-.66.28-1.26.64-1.83 1.07L5.11 5.42c-.24-.09-.5-.01-.64.21L2.28 9.42c-.13.23-.07.51.14.67l2.31 1.81c-.04.35-.07.7-.07 1.08s.03.73.07 1.08L2.42 15.87c-.21.16-.27.44-.14.67l2.19 3.79c.14.23.41.3.64.21l2.72-1.09c.57.43 1.17.79 1.83 1.07l.34 2.33c.04.25.25.43.5.43h3c.25 0 .46-.18.5-.42l.34-2.34c.66-.28 1.26-.64 1.83-1.07l2.72 1.09c.24.09.5.01.64-.21l2.19-3.79c.14-.23.07-.51-.14-.67l-2.31-1.8z"/></svg>Administration</h2><button class="btn-i" style="color:#fff;background:rgba(192,57,43,.15);border-color:rgba(192,57,43,.3)" onclick="closeAdmin()">✕</button></div>
+  <div class="admin-tabs">
+    <button class="admin-tab active" onclick="switchAdminTab('reservations',this)">📅 Réservations</button>
+    <button class="admin-tab" onclick="switchAdminTab('catalogue',this)">💇 Catalogue</button>
+    <button class="admin-tab" onclick="switchAdminTab('equipe',this)">👥 Équipe</button>
+    <button class="admin-tab" onclick="switchAdminTab('galerie',this)">🖼️ Galerie</button>
+    <button class="admin-tab" onclick="switchAdminTab('slides',this)">🎞️ Slideshow</button>
+    <button class="admin-tab" onclick="switchAdminTab('ticker',this)">📢 Bande défilante</button>
+    <button class="admin-tab" onclick="switchAdminTab('tv',this)">📺 Mode TV & Playlist</button>
+    <button class="admin-tab" onclick="switchAdminTab('notifs',this)">🔔 Notifs WA</button>
+  </div>
+  <div class="admin-body">
+
+    <!-- TAB RÉSERVATIONS -->
+    <div class="admin-section active" id="tab-reservations"><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"><button onclick="setResaFilter('toutes',this)" class="filter-btn active-filter" style="padding:6px 14px;border-radius:20px;font-size:.72rem;font-weight:600;border:1.5px solid rgba(255,255,255,.25);background:rgba(255,255,255,.15);color:#fff;cursor:pointer">Toutes</button><button onclick="setResaFilter('en_attente',this)" class="filter-btn" style="padding:6px 14px;border-radius:20px;font-size:.72rem;font-weight:600;border:1.5px solid rgba(243,156,18,.35);background:rgba(243,156,18,.1);color:#f39c12;cursor:pointer">En attente</button><button onclick="setResaFilter('en_cours',this)" class="filter-btn" style="padding:6px 14px;border-radius:20px;font-size:.72rem;font-weight:600;border:1.5px solid rgba(41,182,246,.35);background:rgba(41,182,246,.1);color:#29b6f6;cursor:pointer">En cours</button><button onclick="setResaFilter('termine',this)" class="filter-btn" style="padding:6px 14px;border-radius:20px;font-size:.72rem;font-weight:600;border:1.5px solid rgba(39,174,96,.35);background:rgba(39,174,96,.1);color:#27ae60;cursor:pointer">Terminées</button></div><div id="resaList"><p style="color:rgba(255,255,255,.3);font-size:.82rem;text-align:center;padding:40px">Aucune réservation pour le moment.</p></div></div>
+
+    <!-- TAB CATALOGUE -->
+    <div class="admin-section" id="tab-catalogue"><div class="admin-form"><h4>➕ Ajouter / Modifier une coiffure</h4><input type="hidden" id="editId"/><div class="admin-row3" style="margin-bottom:10px"><div><label class="admin-label">Nom</label><input class="admin-input" id="editNom" placeholder="Box Braids"/></div><div><label class="admin-label">Catégorie</label><select class="admin-input" id="editCat"><option value="tresses">Tresses</option><option value="locks">Locks</option><option value="tissage">Tissage</option><option value="coloration">Coloration</option><option value="soins">Soins</option><option value="coupe">Coupe</option><option value="barbe">Barbe</option></select></div><div><label class="admin-label">Genre</label><select class="admin-input" id="editGenre"><option value="f">👩 Femme</option><option value="m">🧔 Homme</option><option value="mf">✨ Mixte</option></select></div></div><div class="admin-row3" style="margin-bottom:10px"><div><label class="admin-label">Prix base (F CFA)</label><input class="admin-input" id="editPrixBase" type="number" placeholder="8000"/></div><div><label class="admin-label">Prix avec mèches</label><input class="admin-input" id="editPrixMeches" type="number" placeholder="12000"/></div><div><label class="admin-label">Durée</label><input class="admin-input" id="editDuree" placeholder="3–5h"/></div></div><div style="margin-bottom:10px"><label class="admin-label">Description</label><textarea class="admin-input" id="editDesc" rows="2" placeholder="Description courte…"></textarea></div><div style="margin-bottom:10px"><label class="admin-label">URL Image</label><input class="admin-input" id="editImg" type="url" placeholder="https://…"/><button onclick="uploadImageInput('editImg')" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 8px;font-size:.7rem;margin-top:4px;color:#fff;cursor:pointer">📤 Upload</button></div><div style="margin-bottom:10px"><label class="admin-label">Badge (optionnel)</label><input class="admin-input" id="editBadge" placeholder="Populaire"/></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-admin-save" onclick="saveCoiffure()"><svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>Enregistrer</button><button class="btn-admin-del" onclick="clearEditForm()" style="background:rgba(255,255,255,.08);color:rgba(255,255,255,.5);border-color:rgba(255,255,255,.12)">Annuler</button></div></div><div id="adminCatList"></div></div>
+
+    <!-- TAB ÉQUIPE -->
+    <div class="admin-section" id="tab-equipe"><div class="admin-form"><h4>👥 Ajouter / Modifier un coiffeur</h4><input type="hidden" id="eqId"/><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Prénom</label><input class="admin-input" id="eqNom" placeholder="Mariam"/></div><div><label class="admin-label">Genre</label><select class="admin-input" id="eqGenre"><option value="f">👩 Femme</option><option value="m">🧔 Homme</option><option value="mf">✨ Mixte</option></select></div></div><div style="margin-bottom:10px"><label class="admin-label">Spécialités</label><input class="admin-input" id="eqSpe" placeholder="Tresses · Locks · Tissage"/></div><div style="margin-bottom:10px"><label class="admin-label">Photo (URL optionnelle)</label><input class="admin-input" id="eqPhoto" type="url" placeholder="https://…"/></div><div style="display:flex;gap:8px"><button class="btn-admin-save" onclick="saveCoiffeur()">💾 Enregistrer</button><button onclick="clearEqForm()" style="background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:var(--r-sm);padding:9px 14px;font-size:.8rem;font-weight:700;cursor:pointer">Annuler</button></div></div><div id="adminEqList"></div></div>
+
+    <!-- TAB GALERIE -->
+    <div class="admin-section" id="tab-galerie"><div class="admin-form"><h4>🖼️ Ajouter une photo à la galerie</h4><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">URL de l'image (Après)</label><input class="admin-input" id="galUrl" type="url" placeholder="https://…"/><button onclick="uploadImageInput('galUrl')" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 8px;font-size:.7rem;margin-top:4px;color:#fff;cursor:pointer">📤 Upload</button></div><div><label class="admin-label">URL Avant (optionnel)</label><input class="admin-input" id="galAvant" type="url" placeholder="https://… (pour slider Avant/Après)"/></div></div><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Légende</label><input class="admin-input" id="galLabel" placeholder="Box Braids…"/></div><div><label class="admin-label">Genre</label><select class="admin-input" id="galGenre"><option value="f">👩 Femme</option><option value="m">🧔 Homme</option><option value="mf">✨ Mixte</option></select></div></div><div id="galPreviewWrap" style="display:none;margin-bottom:10px"><label class="admin-label">Aperçu</label><img id="galPreviewImg" src="" alt="Aperçu" style="max-height:120px;border-radius:10px;object-fit:cover;border:1px solid rgba(255,255,255,.15)"/></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn-admin-save" onclick="adminAddGalerie()"><svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Ajouter</button><button onclick="clearGalForm()" style="background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:var(--r-sm);padding:9px 14px;font-size:.8rem;font-weight:700;cursor:pointer">Annuler</button></div></div><div id="adminGalList"></div></div>
+
+    <!-- TAB SLIDESHOW -->
+    <div class="admin-section" id="tab-slides"><div class="admin-form"><h4>🎞️ Ajouter une photo au slideshow hero</h4><p style="color:rgba(255,255,255,.35);font-size:.72rem;margin-bottom:12px">Ces photos s'affichent en grand en haut du site (max 8).</p><div style="margin-bottom:10px"><label class="admin-label">URL de l'image</label><input class="admin-input" id="slideUrl" type="url" placeholder="https://…"/><button onclick="uploadImageInput('slideUrl')" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 8px;font-size:.7rem;margin-top:4px;color:#fff;cursor:pointer">📤 Upload</button></div><div id="slidePreviewWrap" style="display:none;margin-bottom:10px"><label class="admin-label">Aperçu</label><img id="slidePreviewImg" src="" alt="Aperçu" style="max-height:130px;width:100%;border-radius:10px;object-fit:cover;border:1px solid rgba(255,255,255,.15)"/></div><div style="display:flex;gap:8px"><button class="btn-admin-save" onclick="adminAddSlide()"><svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Ajouter</button><button onclick="document.getElementById('slideUrl').value='';document.getElementById('slidePreviewWrap').style.display='none'" style="background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:var(--r-sm);padding:9px 14px;font-size:.8rem;font-weight:700;cursor:pointer">Annuler</button></div></div><div id="adminSlideList"></div></div>
+
+    <!-- TAB TICKER (Bande défilante) -->
+    <div class="admin-section" id="tab-ticker"><div class="admin-form"><h4>📢 Configuration de la bande défilante</h4><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Activer la bande</label><select class="admin-input" id="tickerEnabled"><option value="true">Oui</option><option value="false">Non</option></select></div><div><label class="admin-label">Vitesse (px/s)</label><input class="admin-input" id="tickerSpeed" type="number" value="50" placeholder="50"/></div></div><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Couleur fond</label><input class="admin-input" id="tickerBg" type="color" value="#2C2527"/></div><div><label class="admin-label">Couleur texte</label><input class="admin-input" id="tickerColor" type="color" value="#FFFFFF"/></div></div><div style="margin-bottom:10px"><label class="admin-label">Messages (un par ligne, le symbole | sépare texte et lien)</label><textarea class="admin-input" id="tickerMessages" rows="4" placeholder="🎉 Promotion -20% ce weekend !&#10;📅 Nouveaux horaires : 8h-20h|https://wa.me/22655700383&#10;✨ Nouvelle collection de locks"></textarea></div><button class="btn-admin-save" onclick="saveTickerConfig()">💾 Enregistrer la bande</button></div><div id="adminTickerList"></div></div>
+
+    <!-- TAB TV MODE & PLAYLIST (avec support MP4) -->
+    <div class="admin-section" id="tab-tv"><div class="admin-form"><h4>📺 Contrôle du Mode TV (Galerie synchronisée)</h4><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Mode</label><select class="admin-input" id="tvModeSelect"><option value="gallery">📸 Galerie (Images)</option><option value="audio">🎵 Audio (MP3)</option></select></div><div><label class="admin-label">Intervalle (secondes)</label><input class="admin-input" id="tvInterval" type="number" value="5" min="2" max="30"/></div></div><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Contrôle</label><select class="admin-input" id="tvControlMode"><option value="auto">🤖 Automatique (défilement)</option><option value="manual">✋ Manuel (admin swipe)</option></select></div><div><button class="btn-admin-save" onclick="tvPrevRemote()" style="padding:6px 12px">◀ Précédent</button><button class="btn-admin-save" onclick="tvNextRemote()" style="padding:6px 12px">Suivant ▶</button></div></div><button class="btn-admin-save" onclick="saveTvConfig()" style="width:100%;justify-content:center">💾 Appliquer configuration TV</button></div>
+    
+    <div class="admin-form" style="margin-top:16px"><h4>➕ Ajouter média à la playlist (Images/Audio/Vidéo)</h4><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Type</label><select class="admin-input" id="mediaType"><option value="image">🖼️ Image</option><option value="audio">🎵 Audio (MP3)</option><option value="video">🎬 Vidéo (MP4)</option></select></div><div><label class="admin-label">URL du média</label><input class="admin-input" id="mediaUrl" type="url" placeholder="https://…"/><button onclick="uploadMediaInput()" style="background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 8px;font-size:.7rem;margin-top:4px;color:#fff;cursor:pointer">📤 Upload Image/Audio/Vidéo</button></div></div><div class="admin-row2" style="margin-bottom:10px"><div><label class="admin-label">Titre</label><input class="admin-input" id="mediaTitle" placeholder="Box Braids / Musique d'ambiance / Vidéo promo"/></div><div><label class="admin-label">Genre (optionnel)</label><select class="admin-input" id="mediaGenre"><option value="all">Tous</option><option value="f">Femme</option><option value="m">Homme</option></select></div></div><button class="btn-admin-save" onclick="adminAddMedia()">➕ Ajouter à la playlist</button></div>
+    <div id="adminPlaylistList"></div></div>
+
+    <!-- TAB NOTIFICATIONS WA -->
+    <div class="admin-section" id="tab-notifs"><div class="admin-form"><h4>🔔 Envoyer une notification WhatsApp</h4><p style="color:rgba(255,255,255,.35);font-size:.72rem;margin-bottom:12px">Envoyez un message groupé à vos clients via WhatsApp.</p><div style="margin-bottom:10px"><label class="admin-label">Destinataires</label><select class="admin-input" id="notifCible"><option value="all">Tous les clients</option><option value="f">Clientes (Femme)</option><option value="m">Clients (Homme)</option><option value="attente">Réservations en attente</option></select></div><div style="margin-bottom:10px"><label class="admin-label">Type de message</label><select class="admin-input" id="notifType" onchange="updateNotifTemplate()"><option value="promo">🎉 Promotion</option><option value="rappel">⏰ Rappel RDV</option><option value="nouveau">✨ Nouvelle prestation</option><option value="ferme">🔒 Fermeture exceptionnelle</option><option value="libre">✏️ Message libre</option></select></div><div style="margin-bottom:10px"><label class="admin-label">Message</label><textarea class="admin-input" id="notifMsg" rows="5" placeholder="Votre message…"></textarea></div><div style="margin-bottom:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:var(--r-sm);padding:12px"><div style="font-size:.68rem;color:rgba(255,255,255,.4);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Aperçu du message WA</div><div id="notifPreview" style="font-size:.82rem;color:rgba(255,255,255,.7);white-space:pre-wrap;line-height:1.5"></div></div><button class="btn-admin-save" onclick="sendNotifWA()" style="width:100%;justify-content:center;padding:12px"><svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884"/></svg>Ouvrir WhatsApp et envoyer</button></div><div id="notifHistory"></div></div>
+  </div>
+</div>
+
+<script>
+/* ==================== INITIALISATION GLOBALE ==================== */
+let currentCat = 'toutes', currentGenre = 'all', galFilter = 'all', currentCoiffure = null, currentOptPrix = 'base', currentCoiffeurId = null;
+let allResas = [], resaFilter = 'toutes', resaUnsub = null;
+let clickCount = 0, clickTimer = null, slideIndex = 0, slideTimer = null, isDark = false, avisNote = 5;
+let tvUnsub = null, playlistUnsub = null, tvPlaying = true, tvCurrentIndex = 0, tvMediaList = [], tvIntervalId = null, tvAudio = null, tvVideo = null;
+const S = window.SALON_CONFIG || {};
+
+document.addEventListener('DOMContentLoaded', () => {
+  applyConfig(); buildHero(); buildGenreBar(); buildTabs(); buildEquipe(); buildGalerie(); buildAvis(); renderCatalog(); buildLocalisation();
+  initScrollBehaviors(); initTripleClick(); initAdminPreviews(); updateNotifTemplate();
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('resaDate').min = today; document.getElementById('resaDate').value = today;
+  if(S.promo){ document.getElementById('promoText').textContent = S.promo; document.getElementById('promoBanner').classList.add('show'); }
+  initTicker(); initTvSession(); loadPlaylist();
+  setTimeout(() => document.getElementById('loader').classList.add('hide'), 1400);
+});
+
+function applyConfig(){ const nom=S.nom||'Salon'; document.getElementById('pageTitle').textContent=nom+' — Catalogue'; document.getElementById('ldLogo').innerHTML=nom; document.getElementById('ldSlogan').textContent=S.slogan||'Catalogue Coiffures'; document.getElementById('brandName').innerHTML=nom; document.getElementById('heroTitle').innerHTML=nom; document.getElementById('heroVille').textContent=S.ville||''; document.getElementById('heroMapBtn').href=S.maps||'#'; document.getElementById('footerNom').textContent=nom; }
+
+/* HERO SLIDESHOW */
+function buildHero(){ if(slideTimer){ clearInterval(slideTimer); slideTimer=null; } const slides=S.slides||[]; const ss=document.getElementById('heroSS'); const dots=document.getElementById('heroDots'); ss.innerHTML=''; dots.innerHTML=''; if(!slides.length){ ss.style.background='linear-gradient(150deg,#1A0F10 0%,#3D2527 100%)'; return; } slides.forEach((src,i)=>{ const d=document.createElement('div'); d.className='hero-sl'+(i===0?' active':''); d.style.backgroundImage=`url('${src}')`; ss.appendChild(d); const dot=document.createElement('button'); dot.className='hero-dot'+(i===0?' active':''); dot.onclick=()=>goSlide(i); dots.appendChild(dot); }); if(slides.length>1) slideTimer=setInterval(()=>goSlide((slideIndex+1)%slides.length),5000); }
+window.goSlide=function(n){ const sls=document.querySelectorAll('.hero-sl'),dts=document.querySelectorAll('.hero-dot'); sls.forEach(s=>s.classList.remove('active')); dts.forEach(d=>d.classList.remove('active')); if(sls[n]) sls[n].classList.add('active'); if(dts[n]) dts[n].classList.add('active'); slideIndex=n; };
+
+/* GENRE BAR */
+function buildGenreBar(){}
+window.setGenre=function(g,el){ currentGenre=g; currentCat='toutes'; document.querySelectorAll('.genre-btn').forEach(b=>b.className='genre-btn'); if(el){ el.classList.add(g==='f'?'active-f':g==='m'?'active-m':'active-all'); } buildTabs(); renderCatalog(); document.getElementById('sectionTitle').textContent=g==='f'?'👩 Prestations Femme':g==='m'?'🧔 Prestations Homme':'✨ Toutes les prestations'; };
+
+/* TABS */
+function buildTabs(){ const cats=(window.CATEGORIES||[]).filter(c=>{ if(currentGenre==='all') return true; if(c.id==='toutes') return true; return c.genre==='mf'||c.genre===currentGenre; }); document.getElementById('tabs').innerHTML=cats.map(c=>`<button class="tab-btn${c.id==='toutes'?' active':''}" onclick="setTab('${c.id}',this)">${c.emoji} ${c.label}</button>`).join(''); }
+window.setTab=function(id,el){ currentCat=id; document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); if(el) el.classList.add('active'); renderCatalog(); };
+
+/* CATALOGUE */
+window.renderCatalog=function(){ const source=window.__fbCoiffures||window.COIFFURES_DEFAULT||[]; const q=(document.getElementById('searchInput')?.value||'').toLowerCase().trim(); const filtered=source.filter(c=>{ const catOk=currentCat==='toutes'||c.cat===currentCat; const genreOk=currentGenre==='all'||c.genre===currentGenre||c.genre==='mf'; const qOk=!q||c.nom.toLowerCase().includes(q)||(c.desc||'').toLowerCase().includes(q); return catOk&&genreOk&&qOk; }); const grid=document.getElementById('grid'); if(!filtered.length){ grid.innerHTML=`<div class="no-result"><svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>Aucune coiffure trouvée</div>`; return; } grid.innerHTML=filtered.map(c=>renderCard(c)).join(''); };
+function renderCard(c){ const hasMeches=c.prixMeches&&c.prixMeches>0; const prixAff='À partir de '+Number(c.prixBase).toLocaleString('fr-FR')+' F'; const genreLabel=c.genre==='f'?'👩 Femme':c.genre==='m'?'🧔 Homme':'✨ Mixte'; return `<div class="card"><div class="card-img-wrap"><img src="${c.img||''}" alt="${c.nom}" onerror="this.src='https://placehold.co/300x200/F9EEEC/B87C74?text=Photo'" loading="lazy"/>${c.badge?`<div class="card-badge">${c.badge}</div>`:''}<div class="card-genre ${c.genre||'mf'}">${genreLabel}</div>${!c.dispo?`<div class="card-indispo"><span>Non dispo</span></div>`:''}</div><div class="card-body"><div class="card-name">${c.nom}</div><div class="card-desc">${c.desc||''}</div>${hasMeches?`<div class="card-opts"><span class="opt-pill active" onclick="selectOpt(this,'base','${c.id}')">Sans mèches</span><span class="opt-pill" onclick="selectOpt(this,'meches','${c.id}')">Avec mèches</span></div>`:''}<div class="card-meta"><div class="card-price">${prixAff}</div><div class="card-duree"><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>${c.duree||'—'}</div></div><div class="card-btns">${c.dispo?`<button class="btn-wa-card" onclick='openResa(${JSON.stringify(c)})'><svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>Réserver</button>`:`<button class="btn-wa-card" style="background:#9E9E9E;cursor:not-allowed" disabled>Indisponible</button>`}<button class="btn-info-card" onclick='openDetail(${JSON.stringify(c)})' title="Voir détails"><svg viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg></button></div></div></div>`; }
+window.filterCatalog=function(){ renderCatalog(); };
+window.selectOpt=function(el,opt,id){ el.closest('.card').querySelectorAll('.opt-pill').forEach(p=>p.classList.remove('active')); el.classList.add('active'); };
+
+/* ÉQUIPE */
+function buildEquipe(){ const coiffeurs=window.COIFFEURS||window.COIFFEURS_DEFAULT||[]; const g=document.getElementById('equipeGrid'); if(!coiffeurs.length){ document.getElementById('equipe').style.display='none'; return; } g.innerHTML=coiffeurs.filter(e=>e.dispo!==false).map(e=>`<div class="coiffeur-card" onclick="filterByCoiffeur('${e.id}',this)">${e.photo?`<img class="coiffeur-avatar" src="${e.photo}" onerror="this.style.display='none'" alt="${e.nom}"/>`:`<div class="coiffeur-avatar-placeholder">${e.emoji||'💇'}</div>`}<div class="coiffeur-name">${e.nom}</div><div class="coiffeur-spe">${e.specialite||''}</div><span class="coiffeur-badge ${e.genre||'mf'}">${e.genre==='f'?'Femme':e.genre==='m'?'Homme':'Mixte'}</span></div>`).join(''); }
+window.filterByCoiffeur=function(id,el){ document.querySelectorAll('.coiffeur-card').forEach(c=>c.classList.remove('selected')); if(el) el.classList.add('selected'); showToast('👤 '+((window.COIFFEURS||[]).find(c=>c.id===id)?.nom||'')+'  sélectionné·e','rose'); };
+
+/* GALERIE */
+function buildGalerie(){ const gal=S.galerie||[]; const g=document.getElementById('galGrid'); if(!gal.length){ document.getElementById('galerie').style.display='none'; return; } renderGalerie(gal); }
+function renderGalerie(items){ const g=document.getElementById('galGrid'); g.innerHTML=items.map((item,i)=>`<div class="gal-item" onclick="openAA(${i})"><div class="gal-item-inner"><img src="${item.img||''}" onerror="this.src='https://placehold.co/300x300/F9EEEC/B87C74?text=Photo'" loading="lazy" alt="${item.label||''}"/><div class="gal-label">${item.label||''} ${item.avant?'🔄':''}</div><div class="gal-genre-tag ${item.genre||'f'}">${item.genre==='m'?'Homme':item.genre==='mf'?'Mixte':'Femme'}</div></div></div>`).join(''); }
+window.setGalFilter=function(f,el){ galFilter=f; document.querySelectorAll('.gal-f-btn').forEach(b=>b.classList.remove('active')); if(el) el.classList.add('active'); const gal=S.galerie||[]; const filtered=f==='all'?gal:gal.filter(item=>item.genre===f); renderGalerie(filtered); };
+window.openAA=function(i){ const items=galFilter==='all'?S.galerie||[]:(S.galerie||[]).filter(item=>item.genre===galFilter); const item=items[i]; if(!item) return; document.getElementById('aaTitle').textContent=item.label||'Galerie'; document.getElementById('aaApresImg').src=item.img||''; if(item.avant){ document.getElementById('aaAvantImg').src=item.avant; document.getElementById('aaOverlay').style.display='block'; document.getElementById('aaDivider').style.display='block'; document.querySelector('.aa-labels').style.display='flex'; initAASlider(); } else { document.getElementById('aaOverlay').style.display='none'; document.getElementById('aaDivider').style.display='none'; document.querySelector('.aa-labels').style.display='none'; } document.getElementById('avantApresModal').classList.add('open'); };
+window.closeAA=function(){ document.getElementById('avantApresModal').classList.remove('open'); };
+function initAASlider(){ const wrap=document.getElementById('aaSliderWrap'); const overlay=document.getElementById('aaOverlay'); const divider=document.getElementById('aaDivider'); let dragging=false; function setPos(x){ const r=wrap.getBoundingClientRect(); let p=((x-r.left)/r.width)*100; p=Math.max(5,Math.min(95,p)); overlay.style.clipPath=`inset(0 ${100-p}% 0 0)`; divider.style.left=p+'%'; } divider.onmousedown=e=>{ dragging=true; e.preventDefault(); }; divider.ontouchstart=e=>{ dragging=true; }; document.onmousemove=e=>{ if(dragging) setPos(e.clientX); }; document.ontouchmove=e=>{ if(dragging) setPos(e.touches[0].clientX); }; document.onmouseup=document.ontouchend=()=>{ dragging=false; }; }
+
+/* AVIS */
+function buildAvis(){ const avis=S.avis||[]; const g=document.getElementById('avisGrid'); if(!avis.length){ document.getElementById('avis').style.display='none'; return; } g.innerHTML=avis.map(a=>`<div class="avis-card"><div class="avis-stars">${'⭐'.repeat(a.note||5)}</div><div class="avis-text">"${a.texte}"</div><div class="avis-author"><div class="avis-author-dot"></div>${a.nom} ${a.genre==='m'?'🧔':a.genre==='f'?'👩':''}</div></div>`).join(''); }
+window.openAvisModal=function(){ document.getElementById('avisModal').classList.add('open'); setNote(5); };
+window.closeAvisModal=function(){ document.getElementById('avisModal').classList.remove('open'); };
+window.setNote=function(n){ avisNote=n; document.querySelectorAll('#starPicker span').forEach((s,i)=>{ s.textContent=i<n?'⭐':'☆'; }); };
+window.submitAvis=function(){ const nom=document.getElementById('avisNom').value.trim(); const texte=document.getElementById('avisTexte').value.trim(); if(!nom){ showToast('⚠️ Entrez votre prénom','red'); return; } if(!texte){ showToast('⚠️ Écrivez votre avis','red'); return; } const stars='⭐'.repeat(avisNote); const msg=`Bonjour ${S.nom||'le salon'} ! Je souhaite laisser un avis :\n\n${stars}\n"${texte}"\n— ${nom}`; window.open(`https://wa.me/${S.whatsapp||''}?text=${encodeURIComponent(msg)}`,'_blank'); closeAvisModal(); showToast('✅ Merci pour votre avis !','green'); };
+
+/* RÉSERVATION */
+window.openResa=function(c){ currentCoiffure=c; currentOptPrix='base'; currentCoiffeurId=null; document.getElementById('resaPreviewImg').src=c.img||''; document.getElementById('resaPreviewNom').textContent=c.nom; document.getElementById('resaPreviewDuree').textContent='⏱ '+(c.duree||'—'); updateResaPrix(); const hasMeches=c.prixMeches&&c.prixMeches>0; const optWrap=document.getElementById('resaOptWrap'); const opts=document.getElementById('resaOpts'); if(hasMeches){ optWrap.style.display='block'; opts.innerHTML=`<div class="resa-opt active" onclick="pickResaOpt(this,'base')">Sans mèches — ${Number(c.prixBase).toLocaleString('fr-FR')} F</div><div class="resa-opt" onclick="pickResaOpt(this,'meches')">Avec mèches — ${Number(c.prixMeches).toLocaleString('fr-FR')} F</div>`; } else { optWrap.style.display='none'; } buildResaCoiffeurs(c.genre); document.getElementById('resaModal').classList.add('open'); document.body.style.overflow='hidden'; };
+function buildResaCoiffeurs(genre){ const coiffeurs=(window.COIFFEURS||window.COIFFEURS_DEFAULT||[]).filter(e=>e.dispo!==false&&(e.genre==='mf'||e.genre===genre||genre==='mf')); const wrap=document.getElementById('resaCoiffeurs'); wrap.innerHTML=['<div class="resa-coif-item selected" onclick="pickCoiffeur(null,this)"><div class="rci-avatar">💇</div><span>Au choix</span></div>',...coiffeurs.map(e=>`<div class="resa-coif-item" onclick="pickCoiffeur('${e.id}',this)">${e.photo?`<img src="${e.photo}" class="rci-avatar" onerror="this.outerHTML='<div class=\\'rci-avatar\\'>${e.emoji||'💇'}</div>'">`:`<div class="rci-avatar">${e.emoji||'💇'}</div>`}<span>${e.nom}</span></div>`),''].join(''); }
+window.pickCoiffeur=function(id,el){ document.querySelectorAll('#resaCoiffeurs .resa-coif-item').forEach(i=>i.classList.remove('selected')); if(el) el.classList.add('selected'); currentCoiffeurId=id; };
+window.closeResa=function(){ document.getElementById('resaModal').classList.remove('open'); document.body.style.overflow=''; };
+window.pickResaOpt=function(el,opt){ document.querySelectorAll('#resaOpts .resa-opt').forEach(o=>o.classList.remove('active')); el.classList.add('active'); currentOptPrix=opt; updateResaPrix(); };
+function updateResaPrix(){ if(!currentCoiffure) return; const prix=currentOptPrix==='meches'&&currentCoiffure.prixMeches?currentCoiffure.prixMeches:currentCoiffure.prixBase; document.getElementById('resaPreviewPrix').textContent=Number(prix).toLocaleString('fr-FR')+' F CFA'; }
+window.sendResaWA=function(){ const nom=document.getElementById('resaNom').value.trim(); const date=document.getElementById('resaDate').value; const heure=document.getElementById('resaHeure').value; const note=document.getElementById('resaNote').value.trim(); if(!nom){ showToast('⚠️ Veuillez entrer votre nom','red'); return; } if(!date){ showToast('⚠️ Choisissez une date','red'); return; } const c=currentCoiffure; const opt=currentOptPrix==='meches'?'avec mèches':'sans mèches'; const prix=currentOptPrix==='meches'&&c.prixMeches?c.prixMeches:c.prixBase; const dateF=new Date(date).toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'}); const coiffeurNom=currentCoiffeurId?((window.COIFFEURS||window.COIFFEURS_DEFAULT||[]).find(e=>e.id===currentCoiffeurId)?.nom||''):''; let msg=`Bonjour ${S.nom||'le salon'} ! 💇\n\nRéservation :\n✂️ *${c.nom}* (${opt})\n💰 Prix : ${Number(prix).toLocaleString('fr-FR')} F CFA\n📅 Date : ${dateF} à ${heure}\n${coiffeurNom?`👤 Coiffeur·se souhaité·e : ${coiffeurNom}\n`:''}🧑 Nom : ${nom}\n${note?`📝 Note : ${note}\n`:''}\nMerci ! 🙏`; if(window.fbSaveResa) window.fbSaveResa({nom,coiffure:c.nom,option:opt,prix,date,heure,note,coiffeur:coiffeurNom,genre:c.genre}); window.open(`https://wa.me/${S.whatsapp||''}?text=${encodeURIComponent(msg)}`,'_blank'); closeResa(); showToast('✅ Redirection vers WhatsApp !','green'); };
+window.saveResaFirebase=async function(){ const nom=document.getElementById('resaNom').value.trim(); const date=document.getElementById('resaDate').value; const heure=document.getElementById('resaHeure').value; const note=document.getElementById('resaNote').value.trim(); if(!nom){ showToast('⚠️ Entrez votre nom','red'); return; } if(!window.fbSaveResa){ showToast('⚠️ Firebase non configuré','red'); return; } const c=currentCoiffure; const opt=currentOptPrix==='meches'?'avec mèches':'sans mèches'; const prix=currentOptPrix==='meches'&&c.prixMeches?c.prixMeches:c.prixBase; const coiffeurNom=currentCoiffeurId?((window.COIFFEURS||[]).find(e=>e.id===currentCoiffeurId)?.nom||''):''; const ok=await window.fbSaveResa({nom,coiffure:c.nom,option:opt,prix,date,heure,note,coiffeur:coiffeurNom,genre:c.genre}); if(ok){ showToast('✅ Réservation enregistrée !','green'); closeResa(); } else showToast('❌ Erreur Firebase','red'); };
+window.openWaSalon=function(){ window.open(`https://wa.me/${S.whatsapp||''}?text=${encodeURIComponent('Bonjour '+(S.nom||'')+' ! Je souhaite en savoir plus sur vos prestations.')}`,'_blank'); };
+
+/* MODAL DÉTAIL */
+window.openDetail=function(c){ currentCoiffure=c; document.getElementById('detailImg').src=c.img||''; document.getElementById('detailNom').textContent=c.nom; document.getElementById('detailDesc').textContent=c.desc||''; const hasMeches=c.prixMeches&&c.prixMeches>0; const genreLabel=c.genre==='f'?'👩 Femme':c.genre==='m'?'🧔 Homme':'✨ Mixte'; document.getElementById('detailMeta').innerHTML=`<div class="detail-pill"><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>${c.duree||'—'}</div><div class="detail-pill">💰 À partir de ${Number(c.prixBase).toLocaleString('fr-FR')} F</div>${hasMeches?`<div class="detail-pill">🧶 Avec mèches : ${Number(c.prixMeches).toLocaleString('fr-FR')} F</div>`:''}<div class="detail-pill">${genreLabel}</div>`; document.getElementById('detailOpts').innerHTML=hasMeches?`<div class="resa-opt active" onclick="pickResaOpt(this,'base')">Sans mèches</div><div class="resa-opt" onclick="pickResaOpt(this,'meches')">Avec mèches</div>`:''; document.getElementById('detailModal').classList.add('open'); document.body.style.overflow='hidden'; };
+window.closeDetail=function(){ document.getElementById('detailModal').classList.remove('open'); document.body.style.overflow=''; };
+window.openResaFromDetail=function(){ closeDetail(); if(currentCoiffure) setTimeout(()=>openResa(currentCoiffure),200); };
+
+/* LOCALISATION */
+function buildLocalisation(){ document.getElementById('locAdresse').textContent=S.adresse||''; document.getElementById('locHoraires').textContent=S.horaires||''; document.getElementById('locMapsBtn').href=S.maps||'#'; document.getElementById('heroMapBtn').href=S.maps||'#'; const tt=document.getElementById('locTiktokBtn'),fb=document.getElementById('locFacebookBtn'); if(S.tiktok) tt.href=S.tiktok; else tt.style.display='none'; if(S.facebook) fb.href=S.facebook; else fb.style.display='none'; }
+
+/* ADMIN PIN */
+window.openAdmin=function(){ document.getElementById('pinModal').classList.add('open'); setTimeout(()=>document.getElementById('pinInput').focus(),200); };
+window.closePin=function(){ document.getElementById('pinModal').classList.remove('open'); document.getElementById('pinInput').value=''; };
+window.checkPin=function(){ const pin=document.getElementById('pinInput').value; if(pin===(S.adminPin||'1234')){ closePin(); document.getElementById('adminModal').classList.add('open'); document.body.style.overflow='hidden'; loadAdminResas(); renderAdminCatalog(); renderAdminEquipe(); renderAdminGalerie(); renderAdminSlides(); renderAdminPlaylist(); } else { showToast('❌ Code incorrect','red'); document.getElementById('pinInput').value=''; } };
+window.closeAdmin=function(){ document.getElementById('adminModal').classList.remove('open'); document.body.style.overflow=''; if(resaUnsub){ resaUnsub(); resaUnsub=null; } };
+
+/* ADMIN RESA */
+function loadAdminResas(){ if(!window.fbListenResa){ document.getElementById('resaList').innerHTML='<p style="color:rgba(255,255,255,.3);text-align:center;padding:32px">Firebase non configuré.<br><small>Les réservations WA arrivent sur votre téléphone.</small></p>'; return; } resaUnsub=window.fbListenResa(list=>{ allResas=list; renderResaList(); }); }
+window.setResaFilter=function(f,el){ resaFilter=f; document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active-filter')); if(el) el.classList.add('active-filter'); renderResaList(); };
+function renderResaList(){ const filtered=resaFilter==='toutes'?allResas:allResas.filter(r=>r.statut===resaFilter); const el=document.getElementById('resaList'); if(!filtered.length){ el.innerHTML='<p style="color:rgba(255,255,255,.3);font-size:.82rem;text-align:center;padding:32px">Aucune réservation pour ce filtre.</p>'; return; } el.innerHTML=filtered.map(r=>{ const d=r.createdAt?.seconds?new Date(r.createdAt.seconds*1000):null; const heure=d?d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):'--:--'; const dateS=d?d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}):''; const statut=r.statut||'en_attente'; const statutL={en_attente:'⏳ En attente',en_cours:'⚡ En cours',termine:'✅ Terminé'}; return `<div class="resa-card${statut==='en_attente'?' new':''}"><div class="resa-card-top"><div><div class="resa-card-name">👤 ${r.nom||'—'} ${r.genre==='m'?'🧔':r.genre==='f'?'👩':''}</div><div class="resa-card-coif">✂️ ${r.coiffure||'—'} ${r.option?'· '+r.option:''}</div>${r.coiffeur?`<div class="resa-card-detail">💇 Coiffeur·se : ${r.coiffeur}</div>`:''}${r.prix?`<div class="resa-card-detail">💰 ${Number(r.prix).toLocaleString('fr-FR')} F CFA</div>`:''}${r.date?`<div class="resa-card-detail">📅 ${r.date} ${r.heure?'à '+r.heure:''}</div>`:''}${r.note?`<div class="resa-card-detail" style="color:rgba(255,255,255,.5)">📝 ${r.note}</div>`:''}</div><div style="text-align:right"><div class="statut-badge ${statut}">${statutL[statut]||statut}</div><div class="resa-card-time">${heure} ${dateS}</div></div></div><div class="statut-btns"><button class="s-btn attente" onclick="changeStatut('${r.id}','en_attente')">⏳ En attente</button><button class="s-btn cours" onclick="changeStatut('${r.id}','en_cours')">⚡ En cours</button><button class="s-btn termine" onclick="changeStatut('${r.id}','termine')">✅ Terminé</button></div></div>`; }).join(''); }
+window.changeStatut=async function(id,statut){ if(!window.fbUpdateStatut){ showToast('Firebase non connecté','red'); return; } await window.fbUpdateStatut(id,statut); showToast('✅ Statut mis à jour','green'); };
+
+/* ADMIN CATALOGUE */
+function renderAdminCatalog(){ const source=window.__fbCoiffures||window.COIFFURES_DEFAULT||[]; const el=document.getElementById('adminCatList'); el.innerHTML=source.map(c=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.03)"><img src="${c.img||''}" style="width:42px;height:42px;border-radius:8px;object-fit:cover;background:rgba(255,255,255,.1);flex-shrink:0" onerror="this.src='https://placehold.co/42x42/2C2527/B87C74?text=?'"/><div style="flex:1;min-width:0"><div style="color:#fff;font-size:.84rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nom}</div><div style="color:rgba(255,255,255,.4);font-size:.7rem">${c.cat} · ${c.genre==='f'?'👩':c.genre==='m'?'🧔':'✨'} · ${Number(c.prixBase).toLocaleString('fr-FR')} F</div></div><div style="display:flex;gap:6px"><button onclick='editCoiffure(${JSON.stringify(c)})' style="background:rgba(184,124,116,.15);border:1.5px solid rgba(184,124,116,.3);color:var(--rose2);border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">✏️</button><button onclick="deleteCoiffure('${c.id}')" style="background:rgba(192,57,43,.12);border:1.5px solid rgba(192,57,43,.25);color:#e57373;border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🗑️</button></div></div>`).join(''); }
+window.editCoiffure=function(c){ document.getElementById('editId').value=c.id||''; document.getElementById('editNom').value=c.nom||''; document.getElementById('editCat').value=c.cat||'tresses'; document.getElementById('editGenre').value=c.genre||'f'; document.getElementById('editDuree').value=c.duree||''; document.getElementById('editPrixBase').value=c.prixBase||''; document.getElementById('editPrixMeches').value=c.prixMeches||''; document.getElementById('editDesc').value=c.desc||''; document.getElementById('editImg').value=c.img||''; document.getElementById('editBadge').value=c.badge||''; };
+window.saveCoiffure=async function(){ const id=document.getElementById('editId').value; const coiffure={ nom:document.getElementById('editNom').value.trim(), cat:document.getElementById('editCat').value, genre:document.getElementById('editGenre').value, duree:document.getElementById('editDuree').value.trim(), prixBase:Number(document.getElementById('editPrixBase').value)||0, prixMeches:Number(document.getElementById('editPrixMeches').value)||null, desc:document.getElementById('editDesc').value.trim(), img:document.getElementById('editImg').value.trim(), badge:document.getElementById('editBadge').value.trim()||null, dispo:true }; if(id) coiffure.id=id; if(!coiffure.nom){ showToast('⚠️ Nom obligatoire','red'); return; } if(window.fbSaveCoiffure){ const ok=await window.fbSaveCoiffure(coiffure); if(ok){ showToast('✅ Coiffure sauvegardée !','green'); clearEditForm(); } else showToast('❌ Erreur Firebase','red'); } else { const src=window.COIFFURES_DEFAULT; const {id:_id,...data}=coiffure; if(id){ const i=src.findIndex(c=>c.id===id); if(i>=0) src[i]={...src[i],...data}; } else { data.id='c'+Date.now(); src.push(data); } renderCatalog(); renderAdminCatalog(); showToast('✅ Modifié (local)','rose'); clearEditForm(); } };
+window.clearEditForm=function(){ ['editId','editNom','editDuree','editPrixBase','editPrixMeches','editDesc','editImg','editBadge'].forEach(id=>document.getElementById(id).value=''); document.getElementById('editCat').value='tresses'; document.getElementById('editGenre').value='f'; };
+window.deleteCoiffure=async function(id){ if(!confirm('Supprimer cette coiffure ?')) return; if(window.fbDeleteCoiffure){ await window.fbDeleteCoiffure(id); showToast('🗑️ Supprimée','rose'); } else { const i=window.COIFFURES_DEFAULT.findIndex(c=>c.id===id); if(i>=0) window.COIFFURES_DEFAULT.splice(i,1); renderCatalog(); renderAdminCatalog(); showToast('🗑️ Supprimée (local)','rose'); } };
+
+/* ADMIN EQUIPE */
+function renderAdminEquipe(){ const coiffeurs=window.COIFFEURS||window.COIFFEURS_DEFAULT||[]; const el=document.getElementById('adminEqList'); if(!coiffeurs.length){ el.innerHTML='<p style="color:rgba(255,255,255,.35);text-align:center;padding:32px;font-size:.8rem">Aucun coiffeur ajouté.</p>'; return; } el.innerHTML=coiffeurs.map((e,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.03)"><div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--rose3),var(--rose2));display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0">${e.emoji||'💇'}</div><div style="flex:1;min-width:0"><div style="color:#fff;font-size:.84rem;font-weight:700">${e.nom}</div><div style="color:rgba(255,255,255,.4);font-size:.7rem">${e.specialite||''} · ${e.genre==='f'?'👩 Femme':e.genre==='m'?'🧔 Homme':'✨ Mixte'}</div></div><div style="display:flex;gap:6px"><button onclick="editCoiffeur(${i})" style="background:rgba(184,124,116,.15);border:1.5px solid rgba(184,124,116,.3);color:var(--rose2);border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">✏️</button><button onclick="deleteCoiffeur(${i})" style="background:rgba(192,57,43,.12);border:1.5px solid rgba(192,57,43,.25);color:#e57373;border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🗑️</button></div></div>`).join(''); }
+window.editCoiffeur=function(i){ const e=(window.COIFFEURS||[])[i]; if(!e) return; document.getElementById('eqId').value=e.id||''; document.getElementById('eqNom').value=e.nom||''; document.getElementById('eqGenre').value=e.genre||'f'; document.getElementById('eqSpe').value=e.specialite||''; document.getElementById('eqPhoto').value=e.photo||''; };
+window.saveCoiffeur=function(){ const id=document.getElementById('eqId').value; const nom=document.getElementById('eqNom').value.trim(); if(!nom){ showToast('⚠️ Prénom obligatoire','red'); return; } const coiffeur={ id:id||'e'+Date.now(), nom, genre:document.getElementById('eqGenre').value, specialite:document.getElementById('eqSpe').value.trim(), photo:document.getElementById('eqPhoto').value.trim(), dispo:true, emoji:document.getElementById('eqGenre').value==='m'?'👨':'👩' }; const list=window.COIFFEURS||window.COIFFEURS_DEFAULT||[]; if(id){ const i=list.findIndex(e=>e.id===id); if(i>=0) list[i]={...list[i],...coiffeur}; else list.push(coiffeur); } else list.push(coiffeur); window.COIFFEURS=list; buildEquipe(); renderAdminEquipe(); clearEqForm(); showToast('✅ Coiffeur·se enregistré·e','green'); };
+window.deleteCoiffeur=function(i){ if(!confirm('Supprimer ce coiffeur ?')) return; (window.COIFFEURS||[]).splice(i,1); buildEquipe(); renderAdminEquipe(); showToast('🗑️ Supprimé·e','rose'); };
+window.clearEqForm=function(){ ['eqId','eqNom','eqSpe','eqPhoto'].forEach(id=>document.getElementById(id).value=''); document.getElementById('eqGenre').value='f'; };
+
+/* ADMIN GALERIE */
+function renderAdminGalerie(){ const gal=S.galerie||[]; const el=document.getElementById('adminGalList'); if(!gal.length){ el.innerHTML='<p style="color:rgba(255,255,255,.35);text-align:center;padding:32px;font-size:.8rem">Aucune photo. Ajoutez des images ci-dessus.</p>'; return; } el.innerHTML=gal.map((item,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.03)"><img src="${item.img||''}" style="width:52px;height:52px;border-radius:8px;object-fit:cover;flex-shrink:0" onerror="this.src='https://placehold.co/52x52/2C2527/B87C74?text=?'"/><div style="flex:1;min-width:0"><div style="color:#fff;font-size:.84rem;font-weight:600">${item.label||'Sans légende'} ${item.avant?'🔄':''} · ${item.genre==='f'?'👩':item.genre==='m'?'🧔':'✨'}</div><div style="color:rgba(255,255,255,.35);font-size:.6rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${item.img||''}</div></div><div style="display:flex;gap:5px"><button onclick="adminMoveGalerie(${i},-1)" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:6px;padding:5px 8px;font-size:.7rem;cursor:pointer">▲</button><button onclick="adminMoveGalerie(${i},1)" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:6px;padding:5px 8px;font-size:.7rem;cursor:pointer">▼</button><button onclick="adminDeleteGalerie(${i})" style="background:rgba(192,57,43,.12);border:1.5px solid rgba(192,57,43,.25);color:#e57373;border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🗑️</button></div></div>`).join(''); }
+window.adminAddGalerie=function(){ const url=document.getElementById('galUrl').value.trim(); const avant=document.getElementById('galAvant').value.trim(); const label=document.getElementById('galLabel').value.trim()||'Photo'; const genre=document.getElementById('galGenre').value; if(!url){ showToast('⚠️ URL obligatoire','red'); return; } if(!url.match(/^https?:\/\/.+/)){ showToast('⚠️ URL invalide','red'); return; } if(!S.galerie) S.galerie=[]; S.galerie.push({img:url,avant:avant||'',label,genre}); clearGalForm(); buildGalerie(); renderAdminGalerie(); showToast('✅ Photo ajoutée !','green'); };
+window.adminDeleteGalerie=function(i){ if(!confirm('Supprimer cette photo ?')) return; S.galerie.splice(i,1); buildGalerie(); renderAdminGalerie(); showToast('🗑️ Photo supprimée','rose'); };
+window.adminMoveGalerie=function(i,dir){ const j=i+dir; if(j<0||j>=S.galerie.length) return; [S.galerie[i],S.galerie[j]]=[S.galerie[j],S.galerie[i]]; buildGalerie(); renderAdminGalerie(); };
+window.clearGalForm=function(){ document.getElementById('galUrl').value=''; document.getElementById('galAvant').value=''; document.getElementById('galLabel').value=''; document.getElementById('galPreviewWrap').style.display='none'; };
+
+/* ADMIN SLIDESHOW */
+function renderAdminSlides(){ const slides=S.slides||[]; const el=document.getElementById('adminSlideList'); if(!slides.length){ el.innerHTML='<p style="color:rgba(255,255,255,.35);text-align:center;padding:32px;font-size:.8rem">Aucune photo dans le slideshow.</p>'; return; } el.innerHTML=slides.map((url,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.03)"><img src="${url}" style="width:72px;height:44px;border-radius:7px;object-fit:cover;flex-shrink:0" onerror="this.src='https://placehold.co/72x44/2C2527/B87C74?text=?'"/><div style="flex:1;min-width:0"><div style="color:rgba(255,255,255,.35);font-size:.65rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${url}</div><div style="color:rgba(255,255,255,.25);font-size:.6rem;margin-top:2px">Photo ${i+1}/${slides.length}</div></div><div style="display:flex;gap:5px"><button onclick="adminMoveSlide(${i},-1)" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:6px;padding:5px 8px;font-size:.7rem;cursor:pointer">▲</button><button onclick="adminMoveSlide(${i},1)" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:6px;padding:5px 8px;font-size:.7rem;cursor:pointer">▼</button><button onclick="adminDeleteSlide(${i})" style="background:rgba(192,57,43,.12);border:1.5px solid rgba(192,57,43,.25);color:#e57373;border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🗑️</button></div></div>`).join(''); }
+window.adminAddSlide=function(){ const url=document.getElementById('slideUrl').value.trim(); if(!url){ showToast('⚠️ URL obligatoire','red'); return; } if(!url.match(/^https?:\/\/.+/)){ showToast('⚠️ URL invalide','red'); return; } if(!S.slides) S.slides=[]; if(S.slides.length>=8){ showToast('⚠️ Maximum 8 photos','red'); return; } S.slides.push(url); document.getElementById('slideUrl').value=''; document.getElementById('slidePreviewWrap').style.display='none'; buildHero(); renderAdminSlides(); showToast('✅ Photo ajoutée au slideshow !','green'); };
+window.adminDeleteSlide=function(i){ if(!confirm('Retirer cette photo ?')) return; S.slides.splice(i,1); slideIndex=0; buildHero(); renderAdminSlides(); showToast('🗑️ Photo retirée','rose'); };
+window.adminMoveSlide=function(i,dir){ const j=i+dir; if(j<0||j>=S.slides.length) return; [S.slides[i],S.slides[j]]=[S.slides[j],S.slides[i]]; slideIndex=0; buildHero(); renderAdminSlides(); };
+
+/* TICKER (Bande défilante) */
+function initTicker(){ if(window.fbListenTicker) window.fbListenTicker(msgs=>{ const enabled=localStorage.getItem('tickerEnabled')!=='false'; if(!enabled || !msgs.length){ document.getElementById('tickerBar').style.display='none'; return; } const speed=parseInt(localStorage.getItem('tickerSpeed')||'50'); const bg=localStorage.getItem('tickerBg')||'#2C2527'; const color=localStorage.getItem('tickerColor')||'#FFFFFF'; const bar=document.getElementById('tickerBar'); bar.style.background=bg; bar.style.color=color; const content=document.getElementById('tickerContent'); content.innerHTML=msgs.filter(m=>m.active!==false).map(m=>`<span class="ticker-item">${m.link?`<a href="${m.link}" target="_blank">${m.text}</a>`:m.text}</span>`).join(''); content.style.animationDuration=(content.scrollWidth/ speed)+'s'; bar.style.display='block'; }); }
+window.saveTickerConfig=function(){ const enabled=document.getElementById('tickerEnabled').value==='true'; const speed=parseInt(document.getElementById('tickerSpeed').value)||50; const bg=document.getElementById('tickerBg').value; const color=document.getElementById('tickerColor').value; const messagesRaw=document.getElementById('tickerMessages').value; const lines=messagesRaw.split('\n').filter(l=>l.trim()); const msgs=lines.map((line,idx)=>{ const [text,link]=line.split('|'); return { id:'msg'+idx, text:text.trim(), link:link?.trim()||'', active:true, order:idx }; }); localStorage.setItem('tickerEnabled',enabled); localStorage.setItem('tickerSpeed',speed); localStorage.setItem('tickerBg',bg); localStorage.setItem('tickerColor',color); if(window.fbSaveTickerMessage){ msgs.forEach(m=>window.fbSaveTickerMessage(m)); } showToast('✅ Configuration de la bande enregistrée','green'); initTicker(); };
+
+/* TV MODE & PLAYLIST (avec support MP4) */
+function loadPlaylist(){ if(window.fbListenPlaylist) window.fbListenPlaylist(items=>{ tvMediaList=items.filter(i=>i.type); renderAdminPlaylist(); }); else renderAdminPlaylist(); }
+function renderAdminPlaylist(){ const items=tvMediaList||[]; const el=document.getElementById('adminPlaylistList'); if(!items.length){ el.innerHTML='<p style="color:rgba(255,255,255,.35);text-align:center;padding:32px;font-size:.8rem">Aucun média dans la playlist. Ajoutez des images, MP3 ou MP4.</p>'; return; } el.innerHTML=items.map((item,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.03)"><div style="width:50px;height:50px;background:rgba(255,255,255,.1);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.5rem">${item.type==='image'?'🖼️':item.type==='video'?'🎬':'🎵'}</div><div style="flex:1;min-width:0"><div style="color:#fff;font-size:.84rem;font-weight:600">${item.title||'Sans titre'}</div><div style="color:rgba(255,255,255,.35);font-size:.65rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${item.url||''}</div></div><div style="display:flex;gap:5px"><button onclick="adminMoveMedia(${i},-1)" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:6px;padding:5px 8px;font-size:.7rem;cursor:pointer">▲</button><button onclick="adminMoveMedia(${i},1)" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);border-radius:6px;padding:5px 8px;font-size:.7rem;cursor:pointer">▼</button><button onclick="adminDeleteMedia('${item.id}')" style="background:rgba(192,57,43,.12);border:1.5px solid rgba(192,57,43,.25);color:#e57373;border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer">🗑️</button></div></div>`).join(''); }
+window.adminAddMedia=function(){ const type=document.getElementById('mediaType').value; const url=document.getElementById('mediaUrl').value.trim(); const title=document.getElementById('mediaTitle').value.trim()||(type==='image'?'Image':type==='video'?'Vidéo':'Piste audio'); const genre=document.getElementById('mediaGenre').value; if(!url){ showToast('⚠️ URL obligatoire','red'); return; } const media={ id:'med'+Date.now(), type, url, title, genre, order:tvMediaList.length }; if(window.fbSaveMedia){ window.fbSaveMedia(media); } else { tvMediaList.push(media); renderAdminPlaylist(); } showToast('✅ Média ajouté','green'); document.getElementById('mediaUrl').value=''; document.getElementById('mediaTitle').value=''; };
+window.adminDeleteMedia=async function(id){ if(!confirm('Supprimer ce média ?')) return; if(window.fbDeleteMedia){ await window.fbDeleteMedia(id); } else { const i=tvMediaList.findIndex(m=>m.id===id); if(i>=0) tvMediaList.splice(i,1); renderAdminPlaylist(); } showToast('🗑️ Supprimé','rose'); };
+window.adminMoveMedia=function(i,dir){ const j=i+dir; if(j<0||j>=tvMediaList.length) return; [tvMediaList[i],tvMediaList[j]]=[tvMediaList[j],tvMediaList[i]]; renderAdminPlaylist(); };
+function initTvSession(){ if(window.fbGetTvSession) window.fbGetTvSession(session=>{ if(session && document.getElementById('tvContainer').classList.contains('open')){ tvCurrentIndex=session.currentIndex||0; tvPlaying=session.playing!==false; const mode=session.mode||'auto'; if(mode==='auto') startTvAuto(); updateTvDisplay(); } }); }
+function startTvAuto(){ if(tvIntervalId) clearInterval(tvIntervalId); const interval=(parseInt(document.getElementById('tvInterval')?.value)||5)*1000; tvIntervalId=setInterval(()=>{ if(tvPlaying && tvMediaList.length){ tvCurrentIndex=(tvCurrentIndex+1)%tvMediaList.length; updateTvDisplay(); if(window.fbUpdateTvSession) window.fbUpdateTvSession({currentIndex:tvCurrentIndex,lastUpdated:new Date()}); } }, interval); }
+function updateTvDisplay(){ const media=tvMediaList[tvCurrentIndex]; if(!media) return; const tvMediaDiv=document.getElementById('tvMedia'); const tvInfo=document.getElementById('tvInfo'); tvInfo.textContent=media.title||(media.type==='image'?'Image':media.type==='video'?'Vidéo':'Audio');
+  if(tvAudio){ tvAudio.pause(); tvAudio=null; }
+  if(tvVideo){ tvVideo.pause(); tvVideo=null; }
+  if(media.type==='image'){
+    tvMediaDiv.innerHTML=`<img src="${media.url}" alt="${media.title}" style="max-width:100%;max-height:100%;object-fit:contain"/>`;
+  } else if(media.type==='audio'){
+    tvMediaDiv.innerHTML=`<audio id="tvAudioPlayer" controls autoplay style="width:80%"><source src="${media.url}" type="audio/mpeg"></audio>`;
+    const audioEl=document.getElementById('tvAudioPlayer');
+    if(audioEl){ tvAudio=audioEl; audioEl.onended=()=>{ if(tvPlaying) tvNext(); }; }
+  } else if(media.type==='video'){
+    tvMediaDiv.innerHTML=`<video id="tvVideoPlayer" controls autoplay style="max-width:100%;max-height:100%;object-fit:contain" onended="if(tvPlaying) tvNext()"><source src="${media.url}" type="video/mp4"></video>`;
+    const videoEl=document.getElementById('tvVideoPlayer');
+    if(videoEl){ tvVideo=videoEl; }
+  }
+}
+window.openTvMode=function(){ document.getElementById('tvContainer').classList.add('open'); document.body.classList.add('tv-mode-active'); if(tvMediaList.length) updateTvDisplay(); startTvAuto(); };
+window.closeTvMode=function(){ if(tvIntervalId) clearInterval(tvIntervalId); if(tvAudio){ tvAudio.pause(); tvAudio=null; } if(tvVideo){ tvVideo.pause(); tvVideo=null; } document.getElementById('tvContainer').classList.remove('open'); document.body.classList.remove('tv-mode-active'); };
+window.tvNext=function(){ if(tvMediaList.length){ tvCurrentIndex=(tvCurrentIndex+1)%tvMediaList.length; updateTvDisplay(); if(window.fbUpdateTvSession) window.fbUpdateTvSession({currentIndex:tvCurrentIndex,lastUpdated:new Date()}); } };
+window.tvPrev=function(){ if(tvMediaList.length){ tvCurrentIndex=(tvCurrentIndex-1+tvMediaList.length)%tvMediaList.length; updateTvDisplay(); if(window.fbUpdateTvSession) window.fbUpdateTvSession({currentIndex:tvCurrentIndex,lastUpdated:new Date()}); } };
+window.tvTogglePlay=function(){ tvPlaying=!tvPlaying; const btn=document.getElementById('tvPlayPauseBtn'); btn.textContent=tvPlaying?'⏸':'▶'; if(tvPlaying) startTvAuto(); else if(tvIntervalId) clearInterval(tvIntervalId); if(window.fbUpdateTvSession) window.fbUpdateTvSession({playing:tvPlaying}); };
+window.tvNextRemote=function(){ tvNext(); if(window.fbUpdateTvSession) window.fbUpdateTvSession({mode:'manual',lastUpdated:new Date()}); };
+window.tvPrevRemote=function(){ tvPrev(); if(window.fbUpdateTvSession) window.fbUpdateTvSession({mode:'manual',lastUpdated:new Date()}); };
+window.saveTvConfig=function(){ const mode=document.getElementById('tvModeSelect').value; const interval=parseInt(document.getElementById('tvInterval').value)||5; const control=document.getElementById('tvControlMode').value; if(window.fbUpdateTvSession) window.fbUpdateTvSession({mode:control==='auto'?'auto':'manual',interval:interval*1000}); showToast('✅ Configuration TV enregistrée','green'); };
+
+/* NOTIFICATIONS WA */
+const NOTIF_TEMPLATES={ promo:()=>`🎉 *Promotion spéciale ${S.nom||'le salon'}* !\n\nNous vous offrons une réduction exceptionnelle cette semaine. Ne manquez pas cette occasion !\n\n📞 Réservez dès maintenant sur notre site.\n\n✂️ ${S.nom||'Le salon'} — ${S.adresse||''}`, rappel:()=>`⏰ *Rappel de rendez-vous*\n\nBonjour,\nNous vous rappelons votre rendez-vous prévu.\n\nSi vous avez besoin de modifier l'heure, contactez-nous rapidement.\n\n📍 ${S.adresse||''}\n🕐 ${S.horaires||''}`, nouveau:()=>`✨ *Nouvelle prestation disponible !*\n\nChers clients, ${S.nom||'le salon'} est heureux de vous annoncer une nouvelle prestation.\n\nRéservez dès maintenant !\n\n📲 ${S.nom||'Le salon'}`, ferme:()=>`🔒 *Fermeture exceptionnelle*\n\nChers clients,\nNous serons exceptionnellement fermés le [DATE].\n\nNous nous excusons pour la gêne occasionnée.\n\n${S.nom||'L\'équipe du salon'}`, libre:()=>'' };
+window.updateNotifTemplate=function(){ const type=document.getElementById('notifType').value; const tpl=NOTIF_TEMPLATES[type]; if(tpl){ const msg=tpl(); document.getElementById('notifMsg').value=msg; updateNotifPreview(); } };
+function updateNotifPreview(){ const msg=document.getElementById('notifMsg')?.value||''; const prev=document.getElementById('notifPreview'); if(prev) prev.textContent=msg; }
+window.sendNotifWA=function(){ const msg=document.getElementById('notifMsg').value.trim(); if(!msg){ showToast('⚠️ Message vide','red'); return; } window.open(`https://wa.me/${S.whatsapp||''}?text=${encodeURIComponent(msg)}`,'_blank'); showToast('✅ WhatsApp ouvert !','green'); const hist=document.getElementById('notifHistory'); const cible=document.getElementById('notifCible').value; const now=new Date().toLocaleString('fr-FR'); hist.innerHTML=`<div style="background:rgba(39,174,96,.08);border:1px solid rgba(39,174,96,.2);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:8px;font-size:.72rem;color:rgba(255,255,255,.6)">✅ Envoyé le ${now} · ${cible}</div>`+hist.innerHTML; };
+
+/* UPLOAD IMAGE / VIDEO / AUDIO VERS FIREBASE STORAGE */
+window.uploadImageInput=async function(targetId){ const input=document.createElement('input'); input.type='file'; input.accept='image/*'; input.onchange=async(e)=>{ const file=e.target.files[0]; if(!file) return; const path=`salon/images/${Date.now()}_${file.name}`; try{ const url=await window.uploadFileToStorage(file,path); document.getElementById(targetId).value=url; showToast('✅ Image uploadée !','green'); } catch(err){ showToast('❌ Erreur upload','red'); console.error(err); } }; input.click(); };
+window.uploadMediaInput=async function(){ const input=document.createElement('input'); input.type='file'; input.accept='image/*,audio/mpeg,video/mp4,video/mpeg'; input.onchange=async(e)=>{ const file=e.target.files[0]; if(!file) return; const type=file.type.startsWith('image/')?'images':file.type.startsWith('audio/')?'audio':'videos'; const path=`salon/media/${type}/${Date.now()}_${file.name}`; try{ const url=await window.uploadFileToStorage(file,path); document.getElementById('mediaUrl').value=url; showToast('✅ Fichier uploadé !','green'); } catch(err){ showToast('❌ Erreur upload','red'); } }; input.click(); };
+
+/* SWITCH TAB ADMIN */
+window.switchAdminTab=function(tab,el){ document.querySelectorAll('.admin-section').forEach(s=>s.classList.remove('active')); document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('active')); document.getElementById('tab-'+tab).classList.add('active'); if(el) el.classList.add('active'); if(tab==='catalogue') renderAdminCatalog(); if(tab==='galerie') renderAdminGalerie(); if(tab==='slides') renderAdminSlides(); if(tab==='equipe') renderAdminEquipe(); if(tab==='notifs') updateNotifTemplate(); if(tab==='tv') renderAdminPlaylist(); };
+
+/* UTILS */
+function initAdminPreviews(){ const galInput=document.getElementById('galUrl'); if(galInput) galInput.addEventListener('input',()=>{ const url=galInput.value.trim(), wrap=document.getElementById('galPreviewWrap'), img=document.getElementById('galPreviewImg'); if(url.match(/^https?:\/\/.+/)){ img.src=url; img.onerror=()=>{ wrap.style.display='none'; }; img.onload=()=>{ wrap.style.display='block'; }; } else wrap.style.display='none'; }); const slideInput=document.getElementById('slideUrl'); if(slideInput) slideInput.addEventListener('input',()=>{ const url=slideInput.value.trim(), wrap=document.getElementById('slidePreviewWrap'), img=document.getElementById('slidePreviewImg'); if(url.match(/^https?:\/\/.+/)){ img.src=url; img.onerror=()=>{ wrap.style.display='none'; }; img.onload=()=>{ wrap.style.display='block'; }; } else wrap.style.display='none'; }); }
+function initTripleClick(){ document.getElementById('brandClick').addEventListener('click',()=>{ clickCount++; clearTimeout(clickTimer); clickTimer=setTimeout(()=>{ clickCount=0; },1000); if(clickCount>=3){ clickCount=0; openAdmin(); } }); }
+window.toggleDark=function(){ isDark=!isDark; document.documentElement.setAttribute('data-theme',isDark?'dark':'light'); document.getElementById('darkIco').innerHTML=isDark?'<path d="M12 3a9 9 0 100 18A9 9 0 0012 3zm0 2a7 7 0 010 14V5z"/>':'<path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-12.37l-1.06 1.06a.996.996 0 000 1.41c.39.39 1.03.39 1.41 0l1.06-1.06a.996.996 0 000-1.41-.996.996 0 00-1.41 0zM7.05 18.36l-1.06 1.06a.996.996 0 000 1.41c.39.39 1.03.39 1.41 0l1.06-1.06a.996.996 0 000-1.41-.99.99 0 00-1.41 0z"/>'; };
+function initScrollBehaviors(){ const btn=document.getElementById('scrollTop'); window.addEventListener('scroll',()=>{ btn.classList.toggle('show',window.scrollY>300); }); }
+let toastTimer=null; function showToast(msg,type=''){ const t=document.getElementById('toast'); t.textContent=msg; t.className='show'+(type?' '+type:''); clearTimeout(toastTimer); toastTimer=setTimeout(()=>{ t.className=''; },3000); }
+document.getElementById('resaModal')?.addEventListener('click',e=>{ if(e.target===document.getElementById('resaModal')) closeResa(); });
+document.getElementById('detailModal')?.addEventListener('click',e=>{ if(e.target===document.getElementById('detailModal')) closeDetail(); });
+document.getElementById('avantApresModal')?.addEventListener('click',e=>{ if(e.target===document.getElementById('avantApresModal')) closeAA(); });
+document.getElementById('avisModal')?.addEventListener('click',e=>{ if(e.target===document.getElementById('avisModal')) closeAvisModal(); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeResa(); closeDetail(); closeAA(); closeAvisModal(); if(document.getElementById('adminModal').classList.contains('open')) closeAdmin(); if(document.getElementById('tvContainer').classList.contains('open')) closeTvMode(); } });
+if('serviceWorker' in navigator) window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+</script>
+</body>
+</html>
